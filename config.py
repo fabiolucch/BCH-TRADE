@@ -71,11 +71,17 @@ def create_exchange() -> ccxt.Exchange:
 
     exchange_class = getattr(ccxt, EXCHANGE_ID)
 
+    # OKX Demo Trading usa a mesma URL (www.okx.com) com o header
+    # x-simulated-trading: 1 em vez de uma URL separada de sandbox.
+    # set_sandbox_mode() redirecionaria para outra URL e quebraria as credenciais demo.
+    extra_headers: dict = {"x-simulated-trading": "1"} if TESTNET else {}
+
     config = {
         "apiKey"         : API_KEY,
         "secret"         : API_SECRET,
         "password"       : API_PASSPHRASE,  # 'password' é o campo ccxt para passphrase OKX
         "enableRateLimit": True,
+        "headers"        : extra_headers,
         "options": {
             "defaultType": "spot",          # Garante operações no mercado spot
         },
@@ -84,8 +90,6 @@ def create_exchange() -> ccxt.Exchange:
     exchange = exchange_class(config)
 
     if TESTNET:
-        # OKX Demo Trading: set_sandbox_mode ajusta as URLs automaticamente
-        exchange.set_sandbox_mode(True)
         logging.getLogger("bot").info(
             "Modo TESTNET ativado — operações no ambiente de simulação (OKX Demo Trading)."
         )
