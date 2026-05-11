@@ -55,8 +55,8 @@ SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.5"))
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop
 # ─────────────────────────────────────────────────────────────
-TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "1.0"))
-TRAILING_STOP_PCT       = float(os.getenv("TRAILING_STOP_PCT", "2.0"))
+TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "2.0"))
+TRAILING_STOP_PCT       = float(os.getenv("TRAILING_STOP_PCT", "3.5"))
 
 # ─────────────────────────────────────────────────────────────
 # Telegram
