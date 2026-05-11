@@ -40,8 +40,8 @@ TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "1h")
 EMA_FAST        = int(os.getenv("EMA_FAST", "9"))    # EMA rápida — cruzamento de entrada
 EMA_MID         = int(os.getenv("EMA_MID", "21"))    # EMA média  — tendência + cruzamento
 EMA_SLOW        = int(os.getenv("EMA_SLOW", "55"))   # EMA lenta  — filtro de tendência
-RSI_MIN         = float(os.getenv("RSI_MIN", "45"))  # RSI mínimo — confirma momentum
-RSI_MAX         = float(os.getenv("RSI_MAX", "70"))  # RSI máximo — evita sobrecompra
+RSI_MIN         = float(os.getenv("RSI_MIN", "40"))  # RSI mínimo — confirma momentum
+RSI_MAX         = float(os.getenv("RSI_MAX", "65"))  # RSI máximo — evita sobrecompra
 SIGNAL_LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "3"))  # candles para detectar o cruzamento
 
 # ─────────────────────────────────────────────────────────────
