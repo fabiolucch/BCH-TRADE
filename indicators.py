@@ -137,9 +137,9 @@ def calculate_indicators(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]
 
     logger.info(
         f"[{symbol}] [INDICADORES] "
-        f"1D → Close={close_1d:.4f} | EMA50={ema50_1d:.4f} | "
+        f"{TIMEFRAME_TREND.upper()} → Close={close_1d:.4f} | EMA50={ema50_1d:.4f} | "
         f"Tendência={'✓' if trend_ok else '✗'} || "
-        f"4H → Close={close_4h:.4f} | EMA20={ema20_4h:.4f} | "
+        f"{TIMEFRAME_ENTRY.upper()} → Close={close_4h:.4f} | EMA20={ema20_4h:.4f} | "
         f"EMA50={ema50_4h:.4f} | RSI={rsi_current:.2f} | "
         f"Pullback={'✓' if pullback_ok else '✗'} | "
         f"RSI_Sinal={'✓' if rsi_ok else '✗'}"
