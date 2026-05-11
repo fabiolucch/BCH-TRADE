@@ -1,0 +1,30 @@
+# ── Credenciais — NUNCA commitar ──
+.env
+
+# ── Estado da posição e logs gerados em runtime ──
+position_state.json
+bot_trade.log
+*.log
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Ambientes virtuais ──
+venv/
+env/
+.venv/
+.env.bak
+
+# ── IDEs ──
+.vscode/
+.idea/
+*.swp
+*.swo

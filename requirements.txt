@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════════
+#  BCH/USDC Swing Trade Bot — Dependências Python
+# ═══════════════════════════════════════════════════════
+#
+#  Instale com: pip install -r requirements.txt
+#
+# ───────────────────────────────────────────────────────
+
+# Conexão com corretoras (OKX, Binance, etc.)
+ccxt>=4.3.0
+
+# Manipulação de dados OHLCV
+pandas>=2.0.0
+
+# Cálculo de indicadores técnicos (EMA, RSI, etc.)
+pandas_ta>=0.3.14b0
+
+# Carregamento seguro de variáveis de ambiente do .env
+python-dotenv>=1.0.0
+
+# Utilitário para nova versão do pandas_ta (dependência implícita)
+numpy>=1.26.0
