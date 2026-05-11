@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-HISTORY_FILE = "trade_history.csv"
+from config import HISTORY_FILE
 
 _HEADERS = [
     "symbol", "entry_time", "exit_time",
