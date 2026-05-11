@@ -1,8 +1,10 @@
 """
 config.py — Carrega variáveis de ambiente e instancia a exchange via ccxt.
 
-Todas as configurações da estratégia e da conexão são centralizadas aqui.
-Para alterar parâmetros, edite o arquivo .env (nunca hardcode credenciais).
+Estratégia: Triple EMA Cross + RSI Filter
+  - Tendência (TIMEFRAME_TREND): EMA_MID > EMA_SLOW
+  - Entrada   (TIMEFRAME_ENTRY): EMA_FAST cruza acima de EMA_MID
+  - Filtro    (TIMEFRAME_ENTRY): RSI_MIN ≤ RSI ≤ RSI_MAX
 """
 
 import logging
@@ -10,7 +12,6 @@ import os
 from dotenv import load_dotenv
 import ccxt
 
-# Carrega .env antes de qualquer leitura de os.getenv
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────
@@ -21,19 +22,27 @@ API_KEY        = os.getenv("API_KEY", "")
 API_SECRET     = os.getenv("API_SECRET", "")
 API_PASSPHRASE = os.getenv("API_PASSPHRASE", "")
 
-# True  → modo demo/testnet (OKX Paper Trading)
-# False → dinheiro real
 TESTNET = os.getenv("TESTNET", "True").strip().lower() in ("true", "1", "yes")
 
 # ─────────────────────────────────────────────────────────────
-# Pares operados (lista separada por vírgula no .env)
+# Pares operados
 # ─────────────────────────────────────────────────────────────
 _raw_symbols = os.getenv("SYMBOLS", "BCH/USDT,LTC/USDT,DOGE/USDT")
 SYMBOLS = [s.strip() for s in _raw_symbols.split(",") if s.strip()]
-SYMBOL  = SYMBOLS[0]  # mantido para compatibilidade com módulos legados
+SYMBOL  = SYMBOLS[0]
 
-TIMEFRAME_TREND = os.getenv("TIMEFRAME_TREND", "1d")  # Tendência principal
-TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "4h")  # Gatilho de entrada
+TIMEFRAME_TREND = os.getenv("TIMEFRAME_TREND", "4h")
+TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "1h")
+
+# ─────────────────────────────────────────────────────────────
+# Estratégia: Triple EMA + RSI
+# ─────────────────────────────────────────────────────────────
+EMA_FAST        = int(os.getenv("EMA_FAST", "9"))    # EMA rápida — cruzamento de entrada
+EMA_MID         = int(os.getenv("EMA_MID", "21"))    # EMA média  — tendência + cruzamento
+EMA_SLOW        = int(os.getenv("EMA_SLOW", "55"))   # EMA lenta  — filtro de tendência
+RSI_MIN         = float(os.getenv("RSI_MIN", "45"))  # RSI mínimo — confirma momentum
+RSI_MAX         = float(os.getenv("RSI_MAX", "70"))  # RSI máximo — evita sobrecompra
+SIGNAL_LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "3"))  # candles para detectar o cruzamento
 
 # ─────────────────────────────────────────────────────────────
 # Gerenciamento de risco
@@ -46,17 +55,8 @@ SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.5"))
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop
 # ─────────────────────────────────────────────────────────────
-# TRAILING_ACTIVATION_PCT : lucro mínimo (%) para ativar o trailing
-# TRAILING_STOP_PCT       : distância (%) abaixo da máxima histórica
 TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "1.0"))
 TRAILING_STOP_PCT       = float(os.getenv("TRAILING_STOP_PCT", "2.0"))
-
-# ─────────────────────────────────────────────────────────────
-# Parâmetros do RSI
-# ─────────────────────────────────────────────────────────────
-RSI_OVERSOLD       = float(os.getenv("RSI_OVERSOLD", "40.0"))
-RSI_LOOKBACK       = int(os.getenv("RSI_LOOKBACK", "5"))
-PULLBACK_TOLERANCE = float(os.getenv("PULLBACK_TOLERANCE", "5.0"))  # % acima da EMA20
 
 # ─────────────────────────────────────────────────────────────
 # Telegram
@@ -68,42 +68,27 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 # Operacional
 # ─────────────────────────────────────────────────────────────
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))
-OHLCV_LIMIT    = int(os.getenv("OHLCV_LIMIT", "200"))
+OHLCV_LIMIT    = int(os.getenv("OHLCV_LIMIT", "300"))
 LOG_FILE       = os.getenv("LOG_FILE", "bot_trade.log")
 HISTORY_FILE   = os.getenv("HISTORY_FILE", "trade_history.csv")
 
 
 def state_file_for(symbol: str) -> str:
-    """Retorna o caminho do arquivo de estado para o par informado."""
     return f"state_{symbol.replace('/', '_')}.json"
 
 
 def create_exchange() -> ccxt.Exchange:
-    """
-    Cria e retorna a instância configurada da exchange.
-
-    - Usa ccxt para suportar OKX (e opcionalmente Binance).
-    - Ativa sandbox/demo automaticamente quando TESTNET=True.
-    - A OKX exige o campo 'password' (passphrase da API key).
-    """
     if EXCHANGE_ID not in ccxt.exchanges:
-        raise ValueError(
-            f"Exchange '{EXCHANGE_ID}' não encontrada no ccxt. "
-            f"Verifique o valor de EXCHANGE_ID no .env."
-        )
+        raise ValueError(f"Exchange '{EXCHANGE_ID}' não encontrada no ccxt.")
 
     exchange_class = getattr(ccxt, EXCHANGE_ID)
-
     config = {
         "apiKey"         : API_KEY,
         "secret"         : API_SECRET,
         "password"       : API_PASSPHRASE,
         "enableRateLimit": True,
-        "options": {
-            "defaultType": "spot",
-        },
+        "options"        : {"defaultType": "spot"},
     }
-
     exchange = exchange_class(config)
 
     if TESTNET:
@@ -112,8 +97,6 @@ def create_exchange() -> ccxt.Exchange:
             "Modo TESTNET ativado — operações no ambiente de simulação (OKX Demo Trading)."
         )
     else:
-        logging.getLogger("bot").warning(
-            "Modo PRODUÇÃO ativado — operações com dinheiro real!"
-        )
+        logging.getLogger("bot").warning("Modo PRODUÇÃO ativado — operações com dinheiro real!")
 
     return exchange

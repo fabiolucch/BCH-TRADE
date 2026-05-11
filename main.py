@@ -25,6 +25,11 @@ from config import (
     TESTNET,
     TIMEFRAME_TREND,
     TIMEFRAME_ENTRY,
+    EMA_FAST,
+    EMA_MID,
+    EMA_SLOW,
+    RSI_MIN,
+    RSI_MAX,
     create_exchange,
 )
 from indicators import calculate_indicators
@@ -145,19 +150,19 @@ def run_bot() -> None:
                             if not indicators["trend_ok"]:
                                 reasons.append(
                                     f"Tendência ({TIMEFRAME_TREND.upper()}): "
-                                    f"Close={indicators['close_1d']:.4f} < EMA50={indicators['ema50_1d']:.4f}"
+                                    f"EMA{EMA_MID}={indicators['ema_mid_t']:.4f} < "
+                                    f"EMA{EMA_SLOW}={indicators['ema_slow_t']:.4f}"
                                 )
-                            if not indicators["pullback_ok"]:
+                            if not indicators["cross_ok"]:
                                 reasons.append(
-                                    f"Pullback ({TIMEFRAME_ENTRY.upper()}): "
-                                    f"Close={indicators['close_4h']:.4f} fora da zona "
-                                    f"[EMA50={indicators['ema50_4h']:.4f} ~ EMA20={indicators['ema20_4h']:.4f}]"
+                                    f"Cruzamento ({TIMEFRAME_ENTRY.upper()}): "
+                                    f"EMA{EMA_FAST}={indicators['ema_fast_e']:.4f} não cruzou "
+                                    f"EMA{EMA_MID}={indicators['ema_mid_e']:.4f} recentemente"
                                 )
                             if not indicators["rsi_ok"]:
                                 reasons.append(
-                                    f"RSI ({TIMEFRAME_ENTRY.upper()})={indicators['rsi_current']:.2f} | "
-                                    f"Sobrevenda={'Sim' if indicators['rsi_was_oversold'] else 'Não'} | "
-                                    f"Recuperando={'Sim' if indicators['rsi_recovering'] else 'Não'}"
+                                    f"RSI ({TIMEFRAME_ENTRY.upper()})={indicators['rsi_current']:.2f} "
+                                    f"fora da zona [{RSI_MIN}–{RSI_MAX}]"
                                 )
                             logger.info(f"[{symbol}] [SEM SINAL] Motivos:")
                             for i, r in enumerate(reasons, 1):

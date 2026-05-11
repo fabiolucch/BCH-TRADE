@@ -582,7 +582,7 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> boo
             return False
 
         # ── 2. SL / TP ────────────────────────────────────────────────────────
-        entry_est  = indicators["close_4h"]
+        entry_est  = indicators["close_entry"]
         lowest_low = indicators["lowest_low_5c"]
         sl_price, tp_price = calculate_sl_tp(entry_est, lowest_low)
 
