@@ -1,25 +1,29 @@
 """
-execution.py — Lógica de execução de ordens, dimensionamento de posição e
-               monitoramento de saída (Stop Loss / Take Profit).
+execution.py — Lógica de execução de ordens, dimensionamento de posição,
+               trailing stop, monitoramento de saída e registro de histórico.
 
 Fluxo ao detectar sinal de entrada:
   1. Busca saldo USDT disponível
   2. Calcula Stop Loss e Take Profit
-  3. Dimensiona a quantidade de BCH com base no risco máximo (1.5% do saldo)
+  3. Dimensiona quantidade com base no risco máximo (RISK_PCT% do saldo)
   4. Envia ordem de compra a mercado
-  5. Tenta posicionar ordens de saída via API da OKX (TP limit + SL algo)
+  5. Tenta posicionar ordens de saída (TP limit + SL algo na OKX)
   6. Se a API não suportar, ativa modo de monitoramento por software
-  7. Persiste o estado da posição em JSON para sobreviver a reinicializações
+  7. Persiste estado em JSON por par (state_BCH_USDT.json, etc.)
 
-Monitoramento (quando modo='monitor'):
-  - A cada ciclo verifica o preço atual
-  - Fecha a mercado se atingir SL ou TP matematicamente
+Trailing Stop:
+  - Ativa quando lucro >= TRAILING_ACTIVATION_PCT
+  - Trail SL = máxima_histórica × (1 − TRAILING_STOP_PCT / 100)
+  - Ao ativar, cancela ordens abertas e migra para modo monitor
+  - Atualiza o trail SL a cada nova máxima
 """
 
 import json
 import logging
+import math
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import ccxt
@@ -28,53 +32,62 @@ from config import (
     RISK_PCT,
     RR_RATIO,
     SL_BUFFER_PCT,
-    STATE_FILE,
-    SYMBOL,
+    TRAILING_ACTIVATION_PCT,
+    TRAILING_STOP_PCT,
+    state_file_for,
 )
+import telegram_notifier as tg
+import trade_history as history
 
 logger = logging.getLogger("bot")
 
 
 # ═════════════════════════════════════════════════════════════
-# GERENCIAMENTO DE ESTADO (persistência em JSON)
+# GERENCIAMENTO DE ESTADO (JSON por par)
 # ═════════════════════════════════════════════════════════════
 
 _EMPTY_STATE: Dict[str, Any] = {
-    "is_open"     : False,
-    "entry_price" : 0.0,
-    "quantity"    : 0.0,
-    "sl_price"    : 0.0,
-    "tp_price"    : 0.0,
-    "sl_order_id" : None,
-    "tp_order_id" : None,
-    "exit_mode"   : "monitor",  # "orders" | "monitor"
+    "is_open"       : False,
+    "entry_price"   : 0.0,
+    "quantity"      : 0.0,
+    "sl_price"      : 0.0,
+    "tp_price"      : 0.0,
+    "sl_order_id"   : None,
+    "tp_order_id"   : None,
+    "exit_mode"     : "monitor",
+    "entry_time"    : None,
+    "highest_price" : 0.0,
+    "trail_active"  : False,
+    "trail_sl"      : None,
 }
 
 
-def load_state() -> Dict[str, Any]:
-    """Carrega o estado da posição do arquivo JSON; retorna estado vazio se não existir."""
-    if os.path.exists(STATE_FILE):
+def load_state(symbol: str) -> Dict[str, Any]:
+    """Carrega o estado da posição do arquivo JSON do par; retorna vazio se não existir."""
+    path = state_file_for(symbol)
+    if os.path.exists(path):
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning(f"Falha ao ler arquivo de estado ({exc}). Usando estado vazio.")
+            logger.warning(f"[{symbol}] Falha ao ler estado ({exc}). Usando estado vazio.")
     return dict(_EMPTY_STATE)
 
 
-def save_state(state: Dict[str, Any]) -> None:
-    """Persiste o estado da posição no arquivo JSON."""
+def save_state(state: Dict[str, Any], symbol: str) -> None:
+    """Persiste o estado da posição no arquivo JSON do par."""
+    path = state_file_for(symbol)
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
     except OSError as exc:
-        logger.error(f"Falha ao salvar arquivo de estado: {exc}")
+        logger.error(f"[{symbol}] Falha ao salvar estado: {exc}")
 
 
-def reset_state() -> None:
-    """Reseta para estado sem posição aberta e apaga o arquivo de estado."""
-    save_state(dict(_EMPTY_STATE))
-    logger.debug("Estado da posição resetado.")
+def reset_state(symbol: str) -> None:
+    """Reseta para estado sem posição aberta."""
+    save_state(dict(_EMPTY_STATE), symbol)
+    logger.debug(f"[{symbol}] Estado resetado.")
 
 
 # ═════════════════════════════════════════════════════════════
@@ -85,10 +98,8 @@ def calculate_sl_tp(entry_price: float, lowest_low: float) -> Tuple[float, float
     """
     Calcula Stop Loss e Take Profit com base nas regras da estratégia.
 
-    Stop Loss  : 1% abaixo da mínima dos últimos 5 candles de 4H
-    Take Profit: entrada + (risco_por_unidade × RR_RATIO)
-
-    Lança ValueError se o SL calculado for maior ou igual ao preço de entrada.
+    SL  : 1% abaixo da mínima dos últimos N candles de 4H
+    TP  : entrada + (risco_por_unidade × RR_RATIO)
     """
     sl_price      = lowest_low * (1.0 - SL_BUFFER_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
@@ -96,46 +107,39 @@ def calculate_sl_tp(entry_price: float, lowest_low: float) -> Tuple[float, float
     if risk_per_unit <= 0:
         raise ValueError(
             f"SL ({sl_price:.6f}) ≥ Entry ({entry_price:.6f}). "
-            f"Verifique a mínima dos últimos candles e o SL_BUFFER_PCT."
+            f"Verifique a mínima dos candles e SL_BUFFER_PCT."
         )
 
     tp_price = entry_price + (risk_per_unit * RR_RATIO)
-
     logger.debug(
-        f"SL/TP calculados → Entry={entry_price:.4f} | "
-        f"Lowest_low={lowest_low:.4f} | SL={sl_price:.4f} | "
-        f"Risco/unidade={risk_per_unit:.4f} | TP={tp_price:.4f} (R/R 1:{RR_RATIO})"
+        f"SL/TP → Entry={entry_price:.4f} | SL={sl_price:.4f} | "
+        f"Risco/unit={risk_per_unit:.4f} | TP={tp_price:.4f} (R/R 1:{RR_RATIO})"
     )
     return sl_price, tp_price
 
 
 def calculate_position_size(
-    balance_usdc: float,
+    balance_usdt: float,
     entry_price: float,
     sl_price: float,
 ) -> float:
     """
-    Calcula a quantidade de BCH a comprar com base no risco máximo por operação.
+    Calcula a quantidade a comprar com base no risco máximo por operação.
 
-    Fórmula:
-        risco_max_usdc = balance × (RISK_PCT / 100)
-        quantidade     = risco_max_usdc / (entry - sl)
-
-    Garante que o pior cenário (SL ativado) limite a perda a RISK_PCT% do saldo.
+    risco_max = balance × (RISK_PCT / 100)
+    quantidade = risco_max / (entry − sl)
     """
-    max_risk_usdc = balance_usdc * (RISK_PCT / 100.0)
+    max_risk      = balance_usdt * (RISK_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
 
     if risk_per_unit <= 0:
         raise ValueError("Risco por unidade inválido: entry ≤ SL.")
 
-    quantity = max_risk_usdc / risk_per_unit
-
+    quantity = max_risk / risk_per_unit
     logger.info(
-        f"[DIMENSIONAMENTO] Saldo={balance_usdc:.2f} USDT | "
-        f"Risco máx={max_risk_usdc:.2f} USDT ({RISK_PCT}%) | "
-        f"Entry={entry_price:.4f} | SL={sl_price:.4f} | "
-        f"Risco/unit={risk_per_unit:.6f} | → Qty={quantity:.6f} BCH"
+        f"[DIMENSIONAMENTO] Saldo={balance_usdt:.2f} USDT | "
+        f"Risco máx={max_risk:.2f} USDT ({RISK_PCT}%) | "
+        f"Entry={entry_price:.4f} | SL={sl_price:.4f} | → Qty={quantity:.6f}"
     )
     return quantity
 
@@ -148,57 +152,51 @@ def get_usdc_balance(exchange: ccxt.Exchange) -> float:
     """Retorna o saldo livre de USDT na conta spot."""
     try:
         balance = exchange.fetch_balance()
-        usdc    = float(balance.get("USDT", {}).get("free", 0.0))
-        logger.info(f"[SALDO] USDT disponível: {usdc:.2f}")
-        return usdc
+        usdt    = float(balance.get("USDT", {}).get("free", 0.0))
+        logger.info(f"[SALDO] USDT disponível: {usdt:.2f}")
+        return usdt
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
         logger.error(f"Erro ao buscar saldo USDT: {exc}")
         raise
 
 
-def get_current_price(exchange: ccxt.Exchange) -> float:
+def get_current_price(exchange: ccxt.Exchange, symbol: str) -> float:
     """Retorna o último preço negociado do par."""
     try:
-        ticker = exchange.fetch_ticker(SYMBOL)
+        ticker = exchange.fetch_ticker(symbol)
         return float(ticker["last"])
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        logger.error(f"Erro ao buscar preço atual: {exc}")
+        logger.error(f"[{symbol}] Erro ao buscar preço: {exc}")
         raise
 
 
 def _apply_market_precision(
     exchange: ccxt.Exchange,
     quantity: float,
+    symbol: str,
 ) -> float:
-    """
-    Aplica a precisão mínima de quantidade exigida pela exchange para o par.
-    Arredonda para baixo para evitar rejeição por excesso de casas decimais.
-    """
+    """Aplica a precisão mínima de quantidade exigida pela exchange para o par."""
     try:
-        market    = exchange.market(SYMBOL)
+        market    = exchange.market(symbol)
         precision = market.get("precision", {}).get("amount", None)
         min_qty   = market.get("limits", {}).get("amount", {}).get("min", 0.0)
 
         if precision is not None:
-            # ccxt pode retornar precisão como int (casas decimais) ou float (tick size)
             if isinstance(precision, int):
-                import math
                 factor   = 10 ** precision
                 quantity = math.floor(quantity * factor) / factor
             elif isinstance(precision, float) and precision > 0:
-                import math
                 factor   = 1.0 / precision
                 quantity = math.floor(quantity * factor) / factor
 
         if min_qty and quantity < min_qty:
             raise ValueError(
                 f"Quantidade calculada ({quantity:.8f}) menor que o mínimo "
-                f"permitido ({min_qty}) para {SYMBOL}."
+                f"permitido ({min_qty}) para {symbol}."
             )
-
         return quantity
     except Exception as exc:
-        logger.warning(f"Não foi possível aplicar precisão do mercado: {exc}. Usando valor bruto.")
+        logger.warning(f"[{symbol}] Precisão não aplicada: {exc}. Usando valor bruto.")
         return quantity
 
 
@@ -206,25 +204,28 @@ def _apply_market_precision(
 # ENVIO DE ORDENS
 # ═════════════════════════════════════════════════════════════
 
-def place_market_buy(exchange: ccxt.Exchange, quantity: float) -> Optional[Dict]:
+def place_market_buy(
+    exchange: ccxt.Exchange,
+    quantity: float,
+    symbol: str,
+) -> Optional[Dict]:
     """Envia ordem de compra a mercado e retorna o objeto da ordem."""
     try:
-        logger.info(f"[ORDEM] Enviando COMPRA a mercado: {quantity:.6f} {SYMBOL}")
-        order = exchange.create_market_buy_order(SYMBOL, quantity)
+        logger.info(f"[{symbol}] [ORDEM] Enviando COMPRA a mercado: {quantity:.6f}")
+        order = exchange.create_market_buy_order(symbol, quantity)
         logger.info(
-            f"[ORDEM] Compra enviada → ID={order.get('id')} | "
-            f"Status={order.get('status')} | "
-            f"Qty={order.get('amount')} | Preço≈{order.get('price') or 'mercado'}"
+            f"[{symbol}] [ORDEM] Compra → ID={order.get('id')} | "
+            f"Status={order.get('status')} | Qty={order.get('amount')}"
         )
         return order
     except ccxt.InsufficientFunds as exc:
-        logger.error(f"Saldo insuficiente para compra: {exc}")
+        logger.error(f"[{symbol}] Saldo insuficiente: {exc}")
         return None
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        logger.error(f"Erro da exchange ao enviar compra: {exc}")
+        logger.error(f"[{symbol}] Erro da exchange ao comprar: {exc}")
         return None
     except Exception as exc:
-        logger.error(f"Erro inesperado ao enviar compra: {exc}")
+        logger.error(f"[{symbol}] Erro inesperado ao comprar: {exc}")
         return None
 
 
@@ -232,18 +233,16 @@ def _place_okx_algo_sl(
     exchange: ccxt.Exchange,
     quantity: float,
     sl_price: float,
+    symbol: str,
 ) -> Optional[Dict]:
-    """
-    Tenta criar ordem de Stop Loss condicional (algo order) na OKX.
-    Retorna o objeto da ordem ou None se falhar.
-    """
+    """Cria ordem de Stop Loss condicional (algo order) na OKX."""
     params = {
-        "ordType"      : "conditional",
-        "slTriggerPx"  : str(sl_price),
-        "slOrdPx"      : "-1",         # -1 = executar a mercado ao atingir trigger
+        "ordType"        : "conditional",
+        "slTriggerPx"    : str(sl_price),
+        "slOrdPx"        : "-1",
         "slTriggerPxType": "last",
     }
-    return exchange.create_order(SYMBOL, "market", "sell", quantity, params=params)
+    return exchange.create_order(symbol, "market", "sell", quantity, params=params)
 
 
 def place_exit_orders(
@@ -251,72 +250,50 @@ def place_exit_orders(
     quantity: float,
     tp_price: float,
     sl_price: float,
+    symbol: str,
 ) -> Dict[str, Any]:
     """
-    Posiciona ordens de saída logo após a abertura da posição.
+    Posiciona ordens de saída após abertura da posição.
 
-    Estratégia em duas tentativas:
-    1. Ordem de TP como limit sell + SL como algo order condicional (OKX)
-    2. Fallback: monitoramento por software (loop no main.py)
-
-    Retorna dicionário com 'exit_mode', 'tp_order_id' e 'sl_order_id'.
+    Tenta: TP limit + SL algo (OKX). Fallback: modo monitor por software.
     """
-    result: Dict[str, Any] = {
-        "exit_mode"   : "monitor",
-        "tp_order_id" : None,
-        "sl_order_id" : None,
-    }
+    result: Dict[str, Any] = {"exit_mode": "monitor", "tp_order_id": None, "sl_order_id": None}
 
-    # ── Tentativa 1: TP como limit sell ──────────────────────────────────────
     tp_order_id = None
     try:
-        tp_order    = exchange.create_limit_sell_order(SYMBOL, quantity, tp_price)
+        tp_order    = exchange.create_limit_sell_order(symbol, quantity, tp_price)
         tp_order_id = tp_order.get("id")
-        logger.info(
-            f"[SAÍDA] Ordem TP (limit sell) criada → "
-            f"ID={tp_order_id} | Preço={tp_price:.4f}"
-        )
+        logger.info(f"[{symbol}] [SAÍDA] TP limit → ID={tp_order_id} | Preço={tp_price:.4f}")
     except Exception as exc:
-        logger.warning(f"[SAÍDA] Falha ao criar ordem TP limit: {exc}")
+        logger.warning(f"[{symbol}] Falha ao criar ordem TP: {exc}")
 
-    # ── Tentativa 2: SL como algo order (OKX) ────────────────────────────────
     sl_order_id = None
-    if tp_order_id:  # só tenta SL se TP foi criado com sucesso
+    if tp_order_id:
         try:
             if exchange.id == "okx":
-                sl_order    = _place_okx_algo_sl(exchange, quantity, sl_price)
+                sl_order    = _place_okx_algo_sl(exchange, quantity, sl_price, symbol)
                 sl_order_id = sl_order.get("id")
-                logger.info(
-                    f"[SAÍDA] Ordem SL (algo condicional OKX) criada → "
-                    f"ID={sl_order_id} | Trigger={sl_price:.4f}"
-                )
+                logger.info(f"[{symbol}] [SAÍDA] SL algo → ID={sl_order_id} | Trigger={sl_price:.4f}")
             else:
-                sl_order    = exchange.create_stop_market_order(SYMBOL, "sell", quantity, sl_price)
+                sl_order    = exchange.create_stop_market_order(symbol, "sell", quantity, sl_price)
                 sl_order_id = sl_order.get("id")
-                logger.info(
-                    f"[SAÍDA] Ordem SL (stop market) criada → "
-                    f"ID={sl_order_id} | Trigger={sl_price:.4f}"
-                )
+                logger.info(f"[{symbol}] [SAÍDA] SL stop market → ID={sl_order_id}")
         except Exception as exc:
-            logger.warning(f"[SAÍDA] Falha ao criar ordem SL: {exc}")
-            # Cancela o TP para não ficar uma perna órfã
+            logger.warning(f"[{symbol}] Falha ao criar ordem SL: {exc}")
             try:
-                exchange.cancel_order(tp_order_id, SYMBOL)
-                logger.info("[SAÍDA] Ordem TP cancelada (rollback — SL falhou).")
+                exchange.cancel_order(tp_order_id, symbol)
+                logger.info(f"[{symbol}] Ordem TP cancelada (rollback — SL falhou).")
             except Exception:
                 pass
             tp_order_id = None
 
     if tp_order_id and sl_order_id:
-        result["exit_mode"]    = "orders"
-        result["tp_order_id"]  = tp_order_id
-        result["sl_order_id"]  = sl_order_id
-        logger.info("[SAÍDA] Modo de saída: ORDENS (TP limit + SL algo)")
+        result["exit_mode"]   = "orders"
+        result["tp_order_id"] = tp_order_id
+        result["sl_order_id"] = sl_order_id
+        logger.info(f"[{symbol}] Modo saída: ORDENS (TP limit + SL algo)")
     else:
-        logger.info(
-            "[SAÍDA] Modo de saída: MONITORAMENTO por software "
-            "(loop verifica SL/TP a cada ciclo)"
-        )
+        logger.info(f"[{symbol}] Modo saída: MONITOR por software")
 
     return result
 
@@ -325,51 +302,110 @@ def close_position_market(
     exchange: ccxt.Exchange,
     quantity: float,
     reason: str,
+    symbol: str,
 ) -> bool:
-    """Fecha a posição integralmente com ordem de venda a mercado."""
+    """Fecha a posição com ordem de venda a mercado."""
     try:
-        logger.info(f"[SAÍDA] Fechando posição a mercado. Motivo: {reason}")
-        order = exchange.create_market_sell_order(SYMBOL, quantity)
+        logger.info(f"[{symbol}] [SAÍDA] Fechando a mercado. Motivo: {reason}")
+        order = exchange.create_market_sell_order(symbol, quantity)
         logger.info(
-            f"[SAÍDA] Venda executada → ID={order.get('id')} | "
-            f"Status={order.get('status')}"
+            f"[{symbol}] [SAÍDA] Venda → ID={order.get('id')} | Status={order.get('status')}"
         )
         return True
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        logger.error(f"Erro da exchange ao fechar posição: {exc}")
+        logger.error(f"[{symbol}] Erro ao fechar posição: {exc}")
         return False
     except Exception as exc:
-        logger.error(f"Erro inesperado ao fechar posição: {exc}")
+        logger.error(f"[{symbol}] Erro inesperado ao fechar: {exc}")
         return False
 
 
-def _cancel_exit_orders(exchange: ccxt.Exchange, state: Dict) -> None:
-    """Tenta cancelar ordens de TP e SL abertas (chamado antes de fechar a mercado)."""
+def _cancel_exit_orders(exchange: ccxt.Exchange, state: Dict, symbol: str) -> None:
+    """Cancela ordens de TP e SL abertas."""
     for key in ("tp_order_id", "sl_order_id"):
         order_id = state.get(key)
         if order_id:
             try:
-                exchange.cancel_order(order_id, SYMBOL)
-                logger.info(f"[ORDENS] Ordem {key} cancelada: {order_id}")
+                exchange.cancel_order(order_id, symbol)
+                logger.info(f"[{symbol}] Ordem {key} cancelada: {order_id}")
             except Exception as exc:
-                logger.warning(f"Não foi possível cancelar {key} ({order_id}): {exc}")
+                logger.warning(f"[{symbol}] Não cancelou {key} ({order_id}): {exc}")
+
+
+# ═════════════════════════════════════════════════════════════
+# TRAILING STOP
+# ═════════════════════════════════════════════════════════════
+
+def _update_trailing_stop(
+    exchange: ccxt.Exchange,
+    state: Dict,
+    price: float,
+    symbol: str,
+) -> bool:
+    """
+    Atualiza a lógica de trailing stop para a posição aberta.
+
+    Retorna True se o trailing SL foi atingido (posição deve ser fechada).
+    """
+    entry = state["entry_price"]
+
+    # Atualiza máxima histórica
+    if price > state.get("highest_price", entry):
+        state["highest_price"] = price
+        save_state(state, symbol)
+
+    highest    = state["highest_price"]
+    profit_pct = ((highest - entry) / entry) * 100.0
+
+    # Ativa trailing quando lucro >= TRAILING_ACTIVATION_PCT
+    if not state.get("trail_active") and profit_pct >= TRAILING_ACTIVATION_PCT:
+        trail_sl = highest * (1.0 - TRAILING_STOP_PCT / 100.0)
+        state["trail_active"] = True
+        state["trail_sl"]     = trail_sl
+
+        # Cancela ordens abertas e migra para modo monitor
+        if state.get("exit_mode") == "orders":
+            _cancel_exit_orders(exchange, state, symbol)
+            state["exit_mode"]   = "monitor"
+            state["sl_order_id"] = None
+            state["tp_order_id"] = None
+
+        logger.info(
+            f"[{symbol}] [TRAILING] ★ Ativado! "
+            f"Máxima={highest:.4f} | Trail SL={trail_sl:.4f} | Lucro={profit_pct:.2f}%"
+        )
+        tg.notify_trailing_activated(symbol, highest, trail_sl)
+        save_state(state, symbol)
+
+    # Atualiza trail SL se preço fez nova máxima
+    if state.get("trail_active"):
+        new_trail_sl = highest * (1.0 - TRAILING_STOP_PCT / 100.0)
+        if new_trail_sl > state.get("trail_sl", 0.0):
+            state["trail_sl"] = new_trail_sl
+            save_state(state, symbol)
+            logger.info(f"[{symbol}] [TRAILING] SL atualizado → {new_trail_sl:.4f}")
+            tg.notify_trailing_updated(symbol, new_trail_sl)
+
+        # Verifica se preço atingiu o trailing SL
+        if price <= state["trail_sl"]:
+            logger.info(
+                f"[{symbol}] [TRAILING] ✗ Trail SL atingido! "
+                f"Preço={price:.4f} ≤ Trail SL={state['trail_sl']:.4f}"
+            )
+            return True
+
+    return False
 
 
 # ═════════════════════════════════════════════════════════════
 # MONITORAMENTO DE POSIÇÃO ABERTA
 # ═════════════════════════════════════════════════════════════
 
-def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
+def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bool:
     """
-    Verifica se a posição aberta deve ser encerrada (SL ou TP atingido).
+    Verifica se a posição aberta deve ser encerrada (Trailing SL, SL ou TP).
 
-    Retorna:
-        True  → posição ainda aberta (continua monitorando)
-        False → posição foi fechada neste ciclo
-
-    Suporta dois modos definidos em state['exit_mode']:
-    - "monitor" : verifica preço atual e fecha a mercado se SL/TP atingido
-    - "orders"  : verifica status das ordens de TP/SL na exchange
+    Retorna True se ainda aberta, False se foi fechada neste ciclo.
     """
     if not state.get("is_open"):
         return False
@@ -382,47 +418,90 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
     # ── Modo monitoramento por software ──────────────────────────────────────
     if state.get("exit_mode") == "monitor":
         try:
-            price   = get_current_price(exchange)
+            price   = get_current_price(exchange, symbol)
             pnl_pct = ((price - entry) / entry) * 100.0
 
+            trail_info = ""
+            if state.get("trail_active"):
+                trail_info = f" | Trail SL={state['trail_sl']:.4f}"
+
             logger.info(
-                f"[POSIÇÃO] Entry={entry:.4f} | Atual={price:.4f} | "
+                f"[{symbol}] [POSIÇÃO] Entry={entry:.4f} | Atual={price:.4f} | "
                 f"SL={sl_price:.4f} | TP={tp_price:.4f} | "
-                f"PnL não realizado={pnl_pct:+.2f}%"
+                f"PnL={pnl_pct:+.2f}%{trail_info}"
             )
 
-            if price >= tp_price:
-                logger.info(
-                    f"[SAÍDA] ★ TAKE PROFIT ★ Preço={price:.4f} ≥ TP={tp_price:.4f} "
-                    f"| Ganho≈{pnl_pct:+.2f}%"
-                )
-                if close_position_market(exchange, quantity, "Take Profit atingido"):
-                    reset_state()
+            # Trailing stop tem prioridade
+            trail_hit = _update_trailing_stop(exchange, state, price, symbol)
+            if trail_hit:
+                if close_position_market(exchange, quantity, "Trailing Stop", symbol):
+                    metrics = history.record_trade(
+                        symbol, entry, price, quantity,
+                        sl_price, tp_price, "Trailing Stop", state.get("entry_time"),
+                    )
+                    tg.notify_position_closed(
+                        symbol, "Trailing Stop", entry, price,
+                        metrics["pnl_usdt"], metrics["pnl_pct"], metrics["r_multiple"],
+                    )
+                    reset_state(symbol)
                     return False
 
+            # Take Profit
+            if price >= tp_price:
+                logger.info(
+                    f"[{symbol}] [SAÍDA] ★ TAKE PROFIT ★ Preço={price:.4f} ≥ TP={tp_price:.4f} "
+                    f"| Ganho≈{pnl_pct:+.2f}%"
+                )
+                if close_position_market(exchange, quantity, "Take Profit", symbol):
+                    metrics = history.record_trade(
+                        symbol, entry, price, quantity,
+                        sl_price, tp_price, "Take Profit", state.get("entry_time"),
+                    )
+                    tg.notify_position_closed(
+                        symbol, "Take Profit", entry, price,
+                        metrics["pnl_usdt"], metrics["pnl_pct"], metrics["r_multiple"],
+                    )
+                    reset_state(symbol)
+                    return False
+
+            # Stop Loss
             elif price <= sl_price:
                 logger.warning(
-                    f"[SAÍDA] ✗ STOP LOSS ✗ Preço={price:.4f} ≤ SL={sl_price:.4f} "
+                    f"[{symbol}] [SAÍDA] ✗ STOP LOSS ✗ Preço={price:.4f} ≤ SL={sl_price:.4f} "
                     f"| Perda≈{pnl_pct:+.2f}%"
                 )
-                if close_position_market(exchange, quantity, "Stop Loss atingido"):
-                    reset_state()
+                if close_position_market(exchange, quantity, "Stop Loss", symbol):
+                    metrics = history.record_trade(
+                        symbol, entry, price, quantity,
+                        sl_price, tp_price, "Stop Loss", state.get("entry_time"),
+                    )
+                    tg.notify_position_closed(
+                        symbol, "Stop Loss", entry, price,
+                        metrics["pnl_usdt"], metrics["pnl_pct"], metrics["r_multiple"],
+                    )
+                    reset_state(symbol)
                     return False
 
         except Exception as exc:
-            logger.error(f"Erro ao monitorar posição (modo software): {exc}")
+            logger.error(f"[{symbol}] Erro ao monitorar (modo software): {exc}")
 
     # ── Modo com ordens abertas na exchange ───────────────────────────────────
     else:
         try:
-            price   = get_current_price(exchange)
+            price   = get_current_price(exchange, symbol)
             pnl_pct = ((price - entry) / entry) * 100.0
 
             logger.info(
-                f"[POSIÇÃO] Entry={entry:.4f} | Atual={price:.4f} | "
-                f"SL={sl_price:.4f} | TP={tp_price:.4f} | "
-                f"PnL não realizado={pnl_pct:+.2f}%"
+                f"[{symbol}] [POSIÇÃO] Entry={entry:.4f} | Atual={price:.4f} | "
+                f"SL={sl_price:.4f} | TP={tp_price:.4f} | PnL={pnl_pct:+.2f}%"
             )
+
+            # Verifica trailing (pode migrar para modo monitor)
+            _update_trailing_stop(exchange, state, price, symbol)
+
+            # Se trailing mudou o modo, recarrega estado e sai
+            if state.get("exit_mode") == "monitor":
+                return True
 
             for order_key, other_key in (
                 ("tp_order_id", "sl_order_id"),
@@ -432,79 +511,83 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                 if not order_id:
                     continue
 
-                order  = exchange.fetch_order(order_id, SYMBOL)
+                order  = exchange.fetch_order(order_id, symbol)
                 status = order.get("status", "")
 
                 if status == "closed":
-                    label = "TAKE PROFIT" if order_key == "tp_order_id" else "STOP LOSS"
-                    logger.info(
-                        f"[SAÍDA] ★ {label} ★ Ordem {order_id} executada. "
-                        f"Cancelando ordem complementar."
-                    )
-                    # Cancela a outra perna
+                    label      = "Take Profit" if order_key == "tp_order_id" else "Stop Loss"
+                    exit_price = float(order.get("average") or order.get("price") or price)
+                    logger.info(f"[{symbol}] [SAÍDA] ★ {label.upper()} ★ Ordem executada.")
+
                     other_id = state.get(other_key)
                     if other_id:
                         try:
-                            exchange.cancel_order(other_id, SYMBOL)
+                            exchange.cancel_order(other_id, symbol)
                         except Exception:
                             pass
-                    reset_state()
+
+                    metrics = history.record_trade(
+                        symbol, entry, exit_price, quantity,
+                        sl_price, tp_price, label, state.get("entry_time"),
+                    )
+                    tg.notify_position_closed(
+                        symbol, label, entry, exit_price,
+                        metrics["pnl_usdt"], metrics["pnl_pct"], metrics["r_multiple"],
+                    )
+                    reset_state(symbol)
                     return False
 
                 elif status == "canceled":
                     logger.warning(
-                        f"[SAÍDA] Ordem {order_key} ({order_id}) foi cancelada externamente. "
-                        f"Migrando para modo de monitoramento por software."
+                        f"[{symbol}] Ordem {order_key} cancelada externamente. "
+                        f"Migrando para modo monitor."
                     )
-                    _cancel_exit_orders(exchange, state)
-                    state["exit_mode"]    = "monitor"
-                    state["tp_order_id"]  = None
-                    state["sl_order_id"]  = None
-                    save_state(state)
+                    _cancel_exit_orders(exchange, state, symbol)
+                    state["exit_mode"]   = "monitor"
+                    state["tp_order_id"] = None
+                    state["sl_order_id"] = None
+                    save_state(state, symbol)
                     break
 
         except Exception as exc:
-            logger.error(f"Erro ao verificar ordens de saída: {exc}")
+            logger.error(f"[{symbol}] Erro ao verificar ordens de saída: {exc}")
 
-    return True  # posição ainda aberta
+    return True
 
 
 # ═════════════════════════════════════════════════════════════
 # FLUXO COMPLETO DE ABERTURA DE POSIÇÃO
 # ═════════════════════════════════════════════════════════════
 
-def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
+def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> bool:
     """
-    Executa o fluxo completo de abertura de uma nova posição:
+    Executa o fluxo completo de abertura de uma nova posição para o par informado.
 
     1. Verifica saldo mínimo
     2. Calcula SL e TP
-    3. Dimensiona quantidade com base no risco máximo
+    3. Dimensiona quantidade com base no risco
     4. Aplica precisão do mercado
     5. Envia ordem de compra a mercado
-    6. Obtém preço real de execução (recalcula SL/TP se necessário)
+    6. Obtém preço real de execução
     7. Posiciona ordens de saída (TP + SL)
-    8. Persiste estado em JSON
-
-    Retorna True se a posição foi aberta com sucesso, False caso contrário.
+    8. Persiste estado e envia notificação Telegram
     """
     try:
         # ── 1. Saldo disponível ───────────────────────────────────────────────
         balance = get_usdc_balance(exchange)
         if balance < 10.0:
             logger.warning(
-                f"[ENTRADA] Saldo insuficiente para operar: {balance:.2f} USDT "
-                f"(mínimo recomendado: 10 USDT)."
+                f"[{symbol}] Saldo insuficiente: {balance:.2f} USDT (mínimo: 10 USDT)."
             )
             return False
 
-        # ── 2. Estimativa inicial de SL/TP ────────────────────────────────────
+        # ── 2. SL / TP ────────────────────────────────────────────────────────
         entry_est  = indicators["close_4h"]
         lowest_low = indicators["lowest_low_5c"]
         sl_price, tp_price = calculate_sl_tp(entry_est, lowest_low)
 
         logger.info(
-            f"[ENTRADA] Estimativas → Entry≈{entry_est:.4f} | "
+            f"[{symbol}] [ENTRADA] Entry≈{entry_est:.4f} | "
             f"SL={sl_price:.4f} | TP={tp_price:.4f} | R/R=1:{RR_RATIO}"
         )
 
@@ -512,69 +595,69 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
         quantity = calculate_position_size(balance, entry_est, sl_price)
 
         # ── 4. Precisão do mercado ────────────────────────────────────────────
-        quantity = _apply_market_precision(exchange, quantity)
-        logger.info(f"[ENTRADA] Quantidade ajustada (precisão): {quantity:.6f} BCH")
+        quantity = _apply_market_precision(exchange, quantity, symbol)
+        logger.info(f"[{symbol}] [ENTRADA] Qty ajustada (precisão): {quantity:.6f}")
 
-        # ── 5. Ordem de compra a mercado ──────────────────────────────────────
-        buy_order = place_market_buy(exchange, quantity)
+        # ── 5. Ordem de compra ────────────────────────────────────────────────
+        buy_order = place_market_buy(exchange, quantity, symbol)
         if not buy_order:
             return False
 
-        # Breve espera para a ordem ser processada
         time.sleep(2)
 
         # ── 6. Preço real de execução ─────────────────────────────────────────
         entry_real = entry_est
         qty_real   = quantity
         try:
-            filled = exchange.fetch_order(buy_order["id"], SYMBOL)
-            avg    = filled.get("average") or filled.get("price")
+            filled     = exchange.fetch_order(buy_order["id"], symbol)
+            avg        = filled.get("average") or filled.get("price")
             filled_qty = filled.get("filled")
-
             if avg:
                 entry_real = float(avg)
             if filled_qty:
                 qty_real = float(filled_qty)
-
             if entry_real != entry_est:
-                # Recalcula SL/TP com preço real para maior precisão
                 sl_price, tp_price = calculate_sl_tp(entry_real, lowest_low)
                 logger.info(
-                    f"[ENTRADA] Preço real: {entry_real:.4f} | "
-                    f"SL recalculado={sl_price:.4f} | TP recalculado={tp_price:.4f}"
+                    f"[{symbol}] Preço real: {entry_real:.4f} | "
+                    f"SL={sl_price:.4f} | TP={tp_price:.4f}"
                 )
         except Exception as exc:
-            logger.warning(
-                f"Não foi possível obter preço real de execução: {exc}. "
-                f"Usando estimativa."
-            )
+            logger.warning(f"[{symbol}] Preço real não obtido: {exc}. Usando estimativa.")
 
         # ── 7. Ordens de saída ────────────────────────────────────────────────
-        exit_info = place_exit_orders(exchange, qty_real, tp_price, sl_price)
+        exit_info  = place_exit_orders(exchange, qty_real, tp_price, sl_price, symbol)
+        entry_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        # ── 8. Persistir estado ───────────────────────────────────────────────
+        # ── 8. Persiste estado ────────────────────────────────────────────────
         state = {
-            "is_open"     : True,
-            "entry_price" : entry_real,
-            "quantity"    : qty_real,
-            "sl_price"    : sl_price,
-            "tp_price"    : tp_price,
-            "tp_order_id" : exit_info.get("tp_order_id"),
-            "sl_order_id" : exit_info.get("sl_order_id"),
-            "exit_mode"   : exit_info.get("exit_mode", "monitor"),
+            "is_open"       : True,
+            "entry_price"   : entry_real,
+            "quantity"      : qty_real,
+            "sl_price"      : sl_price,
+            "tp_price"      : tp_price,
+            "tp_order_id"   : exit_info.get("tp_order_id"),
+            "sl_order_id"   : exit_info.get("sl_order_id"),
+            "exit_mode"     : exit_info.get("exit_mode", "monitor"),
+            "entry_time"    : entry_time,
+            "highest_price" : entry_real,
+            "trail_active"  : False,
+            "trail_sl"      : None,
         }
-        save_state(state)
+        save_state(state, symbol)
+
+        tg.notify_position_opened(symbol, entry_real, sl_price, tp_price, qty_real)
 
         logger.info(
-            f"[POSIÇÃO ABERTA] ✓ Entry={entry_real:.4f} | Qty={qty_real:.6f} BCH | "
-            f"SL={sl_price:.4f} | TP={tp_price:.4f} | "
+            f"[{symbol}] [POSIÇÃO ABERTA] ✓ Entry={entry_real:.4f} | "
+            f"Qty={qty_real:.6f} | SL={sl_price:.4f} | TP={tp_price:.4f} | "
             f"Modo saída: {exit_info['exit_mode'].upper()}"
         )
         return True
 
     except ValueError as exc:
-        logger.error(f"[ENTRADA] Parâmetros inválidos: {exc}")
+        logger.error(f"[{symbol}] Parâmetros inválidos: {exc}")
         return False
     except Exception as exc:
-        logger.error(f"[ENTRADA] Erro inesperado ao abrir posição: {exc}", exc_info=True)
+        logger.error(f"[{symbol}] Erro inesperado ao abrir posição: {exc}", exc_info=True)
         return False

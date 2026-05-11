@@ -20,3 +20,6 @@ python-dotenv>=1.0.0
 
 # Utilitário para nova versão do pandas_ta (dependência implícita)
 numpy>=1.26.0
+
+# Notificações Telegram via Bot API
+requests>=2.31.0
