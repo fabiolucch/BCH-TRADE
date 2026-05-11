@@ -27,9 +27,8 @@ TESTNET = os.getenv("TESTNET", "True").strip().lower() in ("true", "1", "yes")
 # ─────────────────────────────────────────────────────────────
 # Pares operados
 # ─────────────────────────────────────────────────────────────
-_raw_symbols = os.getenv("SYMBOLS", "BCH/USDT,LTC/USDT,DOGE/USDT")
+_raw_symbols = os.getenv("SYMBOLS", "LTC/USDT,ADA/USDT,XRP/USDT,SOL/USDT")
 SYMBOLS = [s.strip() for s in _raw_symbols.split(",") if s.strip()]
-SYMBOL  = SYMBOLS[0]
 
 TIMEFRAME_TREND = os.getenv("TIMEFRAME_TREND", "4h")
 TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "1h")
@@ -37,12 +36,12 @@ TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "1h")
 # ─────────────────────────────────────────────────────────────
 # Estratégia: Triple EMA + RSI
 # ─────────────────────────────────────────────────────────────
-EMA_FAST        = int(os.getenv("EMA_FAST", "9"))    # EMA rápida — cruzamento de entrada
-EMA_MID         = int(os.getenv("EMA_MID", "21"))    # EMA média  — tendência + cruzamento
-EMA_SLOW        = int(os.getenv("EMA_SLOW", "55"))   # EMA lenta  — filtro de tendência
-RSI_MIN         = float(os.getenv("RSI_MIN", "40"))  # RSI mínimo — confirma momentum
-RSI_MAX         = float(os.getenv("RSI_MAX", "65"))  # RSI máximo — evita sobrecompra
-SIGNAL_LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "3"))  # candles para detectar o cruzamento
+EMA_FAST        = int(os.getenv("EMA_FAST", "9"))
+EMA_MID         = int(os.getenv("EMA_MID", "21"))
+EMA_SLOW        = int(os.getenv("EMA_SLOW", "55"))
+RSI_MIN         = float(os.getenv("RSI_MIN", "40"))
+RSI_MAX         = float(os.getenv("RSI_MAX", "65"))
+SIGNAL_LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "3"))
 
 # ─────────────────────────────────────────────────────────────
 # Gerenciamento de risco
@@ -51,7 +50,7 @@ RISK_PCT         = float(os.getenv("RISK_PCT", "1.5"))
 RR_RATIO         = float(os.getenv("RR_RATIO", "2.0"))
 SL_CANDLES       = int(os.getenv("SL_CANDLES", "2"))
 SL_BUFFER_PCT    = float(os.getenv("SL_BUFFER_PCT", "0.5"))
-MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "25.0"))  # % máx do saldo por operação
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "25.0"))
 
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop

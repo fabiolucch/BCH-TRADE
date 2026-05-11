@@ -9,7 +9,7 @@ Fluxo ao detectar sinal de entrada:
   4. Envia ordem de compra a mercado
   5. Tenta posicionar ordens de saída (TP limit + SL algo na OKX)
   6. Se a API não suportar, ativa modo de monitoramento por software
-  7. Persiste estado em JSON por par (state_BCH_USDT.json, etc.)
+  7. Persiste estado em JSON por par (state_LTC_USDT.json, etc.)
 
 Trailing Stop:
   - Ativa quando lucro >= TRAILING_ACTIVATION_PCT
@@ -96,12 +96,6 @@ def reset_state(symbol: str) -> None:
 # ═════════════════════════════════════════════════════════════
 
 def calculate_sl_tp(entry_price: float, lowest_low: float) -> Tuple[float, float]:
-    """
-    Calcula Stop Loss e Take Profit com base nas regras da estratégia.
-
-    SL  : 1% abaixo da mínima dos últimos N candles de 4H
-    TP  : entrada + (risco_por_unidade × RR_RATIO)
-    """
     sl_price      = lowest_low * (1.0 - SL_BUFFER_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
 
@@ -124,13 +118,6 @@ def calculate_position_size(
     entry_price: float,
     sl_price: float,
 ) -> float:
-    """
-    Calcula a quantidade a comprar com base no risco máximo por operação.
-
-    risco_max    = balance × (RISK_PCT / 100)
-    quantidade   = risco_max / (entry − sl)
-    cap aplicado = balance × (MAX_POSITION_PCT / 100)  → evita posições > saldo
-    """
     max_risk      = balance_usdt * (RISK_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
 
@@ -139,7 +126,6 @@ def calculate_position_size(
 
     quantity = max_risk / risk_per_unit
 
-    # Aplica teto de posição: nunca alocar mais que MAX_POSITION_PCT do saldo
     max_position_value = balance_usdt * (MAX_POSITION_PCT / 100.0)
     position_value     = quantity * entry_price
     if position_value > max_position_value:
@@ -162,7 +148,7 @@ def calculate_position_size(
 # CONSULTAS À EXCHANGE
 # ═════════════════════════════════════════════════════════════
 
-def get_usdc_balance(exchange: ccxt.Exchange) -> float:
+def get_usdt_balance(exchange: ccxt.Exchange) -> float:
     """Retorna o saldo livre de USDT na conta spot."""
     try:
         balance = exchange.fetch_balance()
@@ -266,11 +252,7 @@ def place_exit_orders(
     sl_price: float,
     symbol: str,
 ) -> Dict[str, Any]:
-    """
-    Posiciona ordens de saída após abertura da posição.
-
-    Tenta: TP limit + SL algo (OKX). Fallback: modo monitor por software.
-    """
+    """Posiciona ordens de saída após abertura da posição. Fallback: modo monitor."""
     result: Dict[str, Any] = {"exit_mode": "monitor", "tp_order_id": None, "sl_order_id": None}
 
     tp_order_id = None
@@ -356,14 +338,9 @@ def _update_trailing_stop(
     price: float,
     symbol: str,
 ) -> bool:
-    """
-    Atualiza a lógica de trailing stop para a posição aberta.
-
-    Retorna True se o trailing SL foi atingido (posição deve ser fechada).
-    """
+    """Atualiza trailing stop. Retorna True se o trail SL foi atingido."""
     entry = state["entry_price"]
 
-    # Atualiza máxima histórica
     if price > state.get("highest_price", entry):
         state["highest_price"] = price
         save_state(state, symbol)
@@ -371,13 +348,11 @@ def _update_trailing_stop(
     highest    = state["highest_price"]
     profit_pct = ((highest - entry) / entry) * 100.0
 
-    # Ativa trailing quando lucro >= TRAILING_ACTIVATION_PCT
     if not state.get("trail_active") and profit_pct >= TRAILING_ACTIVATION_PCT:
         trail_sl = highest * (1.0 - TRAILING_STOP_PCT / 100.0)
         state["trail_active"] = True
         state["trail_sl"]     = trail_sl
 
-        # Cancela ordens abertas e migra para modo monitor
         if state.get("exit_mode") == "orders":
             _cancel_exit_orders(exchange, state, symbol)
             state["exit_mode"]   = "monitor"
@@ -391,7 +366,6 @@ def _update_trailing_stop(
         tg.notify_trailing_activated(symbol, highest, trail_sl)
         save_state(state, symbol)
 
-    # Atualiza trail SL se preço fez nova máxima
     if state.get("trail_active"):
         new_trail_sl = highest * (1.0 - TRAILING_STOP_PCT / 100.0)
         if new_trail_sl > state.get("trail_sl", 0.0):
@@ -400,7 +374,6 @@ def _update_trailing_stop(
             logger.info(f"[{symbol}] [TRAILING] SL atualizado → {new_trail_sl:.4f}")
             tg.notify_trailing_updated(symbol, new_trail_sl)
 
-        # Verifica se preço atingiu o trailing SL
         if price <= state["trail_sl"]:
             logger.info(
                 f"[{symbol}] [TRAILING] ✗ Trail SL atingido! "
@@ -418,7 +391,6 @@ def _update_trailing_stop(
 def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bool:
     """
     Verifica se a posição aberta deve ser encerrada (Trailing SL, SL ou TP).
-
     Retorna True se ainda aberta, False se foi fechada neste ciclo.
     """
     if not state.get("is_open"):
@@ -429,7 +401,6 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
     sl_price = state["sl_price"]
     quantity = state["quantity"]
 
-    # ── Modo monitoramento por software ──────────────────────────────────────
     if state.get("exit_mode") == "monitor":
         try:
             price   = get_current_price(exchange, symbol)
@@ -445,7 +416,6 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
                 f"PnL={pnl_pct:+.2f}%{trail_info}"
             )
 
-            # Trailing stop tem prioridade
             trail_hit = _update_trailing_stop(exchange, state, price, symbol)
             if trail_hit:
                 if close_position_market(exchange, quantity, "Trailing Stop", symbol):
@@ -460,7 +430,6 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
                     reset_state(symbol)
                     return False
 
-            # Take Profit
             if price >= tp_price:
                 logger.info(
                     f"[{symbol}] [SAÍDA] ★ TAKE PROFIT ★ Preço={price:.4f} ≥ TP={tp_price:.4f} "
@@ -478,7 +447,6 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
                     reset_state(symbol)
                     return False
 
-            # Stop Loss
             elif price <= sl_price:
                 logger.warning(
                     f"[{symbol}] [SAÍDA] ✗ STOP LOSS ✗ Preço={price:.4f} ≤ SL={sl_price:.4f} "
@@ -499,7 +467,6 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
         except Exception as exc:
             logger.error(f"[{symbol}] Erro ao monitorar (modo software): {exc}")
 
-    # ── Modo com ordens abertas na exchange ───────────────────────────────────
     else:
         try:
             price   = get_current_price(exchange, symbol)
@@ -510,10 +477,8 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
                 f"SL={sl_price:.4f} | TP={tp_price:.4f} | PnL={pnl_pct:+.2f}%"
             )
 
-            # Verifica trailing (pode migrar para modo monitor)
             _update_trailing_stop(exchange, state, price, symbol)
 
-            # Se trailing mudou o modo, recarrega estado e sai
             if state.get("exit_mode") == "monitor":
                 return True
 
@@ -576,26 +541,15 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
 def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> bool:
     """
     Executa o fluxo completo de abertura de uma nova posição para o par informado.
-
-    1. Verifica saldo mínimo
-    2. Calcula SL e TP
-    3. Dimensiona quantidade com base no risco
-    4. Aplica precisão do mercado
-    5. Envia ordem de compra a mercado
-    6. Obtém preço real de execução
-    7. Posiciona ordens de saída (TP + SL)
-    8. Persiste estado e envia notificação Telegram
     """
     try:
-        # ── 1. Saldo disponível ───────────────────────────────────────────────
-        balance = get_usdc_balance(exchange)
+        balance = get_usdt_balance(exchange)
         if balance < 10.0:
             logger.warning(
                 f"[{symbol}] Saldo insuficiente: {balance:.2f} USDT (mínimo: 10 USDT)."
             )
             return False
 
-        # ── 2. SL / TP ────────────────────────────────────────────────────────
         entry_est  = indicators["close_entry"]
         lowest_low = indicators["lowest_low_5c"]
         sl_price, tp_price = calculate_sl_tp(entry_est, lowest_low)
@@ -605,21 +559,16 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> boo
             f"SL={sl_price:.4f} | TP={tp_price:.4f} | R/R=1:{RR_RATIO}"
         )
 
-        # ── 3. Dimensionamento ────────────────────────────────────────────────
         quantity = calculate_position_size(balance, entry_est, sl_price)
-
-        # ── 4. Precisão do mercado ────────────────────────────────────────────
         quantity = _apply_market_precision(exchange, quantity, symbol)
         logger.info(f"[{symbol}] [ENTRADA] Qty ajustada (precisão): {quantity:.6f}")
 
-        # ── 5. Ordem de compra ────────────────────────────────────────────────
         buy_order = place_market_buy(exchange, quantity, symbol)
         if not buy_order:
             return False
 
         time.sleep(2)
 
-        # ── 6. Preço real de execução ─────────────────────────────────────────
         entry_real = entry_est
         qty_real   = quantity
         try:
@@ -639,11 +588,9 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> boo
         except Exception as exc:
             logger.warning(f"[{symbol}] Preço real não obtido: {exc}. Usando estimativa.")
 
-        # ── 7. Ordens de saída ────────────────────────────────────────────────
         exit_info  = place_exit_orders(exchange, qty_real, tp_price, sl_price, symbol)
         entry_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        # ── 8. Persiste estado ────────────────────────────────────────────────
         state = {
             "is_open"       : True,
             "entry_price"   : entry_real,

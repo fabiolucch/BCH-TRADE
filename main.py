@@ -35,7 +35,7 @@ from config import (
 from indicators import calculate_indicators
 from execution import (
     check_open_position,
-    get_usdc_balance,
+    get_usdt_balance,
     load_state,
     open_position,
 )
@@ -101,20 +101,17 @@ def run_bot() -> None:
         logger.info(f"[CICLO #{iteration:04d}]  {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
 
         try:
-            # Saldo exibido uma vez por ciclo
             try:
-                get_usdc_balance(exchange)
+                get_usdt_balance(exchange)
             except Exception:
                 pass
 
-            # ── Processa cada par ─────────────────────────────────────────────
             for symbol in SYMBOLS:
                 logger.info(f"── [{symbol}] " + "─" * (50 - len(symbol)))
 
                 try:
                     state = load_state(symbol)
 
-                    # ── RAMO A: Posição aberta → monitorar ────────────────────
                     if state.get("is_open"):
                         trail_str = "ATIVO" if state.get("trail_active") else "inativo"
                         logger.info(
@@ -132,7 +129,6 @@ def run_bot() -> None:
                         else:
                             logger.info(f"[{symbol}] [STATUS] Posição mantida. Aguardando próximo ciclo.")
 
-                    # ── RAMO B: Sem posição → verificar sinal ──────────────────
                     else:
                         logger.info(f"[{symbol}] [STATUS] Sem posição aberta. Analisando mercado...")
                         indicators = calculate_indicators(exchange, symbol)
