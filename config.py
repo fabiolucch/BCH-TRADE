@@ -47,10 +47,11 @@ SIGNAL_LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "3"))  # candles para detecta
 # ─────────────────────────────────────────────────────────────
 # Gerenciamento de risco
 # ─────────────────────────────────────────────────────────────
-RISK_PCT      = float(os.getenv("RISK_PCT", "1.5"))
-RR_RATIO      = float(os.getenv("RR_RATIO", "2.0"))
-SL_CANDLES    = int(os.getenv("SL_CANDLES", "3"))
-SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.5"))
+RISK_PCT         = float(os.getenv("RISK_PCT", "1.5"))
+RR_RATIO         = float(os.getenv("RR_RATIO", "2.0"))
+SL_CANDLES       = int(os.getenv("SL_CANDLES", "2"))
+SL_BUFFER_PCT    = float(os.getenv("SL_BUFFER_PCT", "0.5"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "25.0"))  # % máx do saldo por operação
 
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop

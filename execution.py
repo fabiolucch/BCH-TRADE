@@ -32,6 +32,7 @@ from config import (
     RISK_PCT,
     RR_RATIO,
     SL_BUFFER_PCT,
+    MAX_POSITION_PCT,
     TRAILING_ACTIVATION_PCT,
     TRAILING_STOP_PCT,
     state_file_for,
@@ -126,8 +127,9 @@ def calculate_position_size(
     """
     Calcula a quantidade a comprar com base no risco máximo por operação.
 
-    risco_max = balance × (RISK_PCT / 100)
-    quantidade = risco_max / (entry − sl)
+    risco_max    = balance × (RISK_PCT / 100)
+    quantidade   = risco_max / (entry − sl)
+    cap aplicado = balance × (MAX_POSITION_PCT / 100)  → evita posições > saldo
     """
     max_risk      = balance_usdt * (RISK_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
@@ -136,9 +138,21 @@ def calculate_position_size(
         raise ValueError("Risco por unidade inválido: entry ≤ SL.")
 
     quantity = max_risk / risk_per_unit
+
+    # Aplica teto de posição: nunca alocar mais que MAX_POSITION_PCT do saldo
+    max_position_value = balance_usdt * (MAX_POSITION_PCT / 100.0)
+    position_value     = quantity * entry_price
+    if position_value > max_position_value:
+        quantity = max_position_value / entry_price
+        logger.info(
+            f"[DIMENSIONAMENTO] Posição limitada pelo teto de {MAX_POSITION_PCT}%: "
+            f"{position_value:.2f} → {max_position_value:.2f} USDT"
+        )
+
     logger.info(
         f"[DIMENSIONAMENTO] Saldo={balance_usdt:.2f} USDT | "
         f"Risco máx={max_risk:.2f} USDT ({RISK_PCT}%) | "
+        f"Posição={quantity * entry_price:.2f} USDT ({MAX_POSITION_PCT}% máx) | "
         f"Entry={entry_price:.4f} | SL={sl_price:.4f} | → Qty={quantity:.6f}"
     )
     return quantity
