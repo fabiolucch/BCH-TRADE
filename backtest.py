@@ -30,6 +30,7 @@ from config import (
     TRAILING_STOP_PCT,
     RSI_OVERSOLD,
     RSI_LOOKBACK,
+    PULLBACK_TOLERANCE,
     create_exchange,
 )
 
@@ -97,7 +98,7 @@ def get_indicators(
         return None
 
     trend_ok      = close_1d > ema50_1d
-    pullback_high = ema20_4h * 1.02
+    pullback_high = ema20_4h * (1.0 + PULLBACK_TOLERANCE / 100.0)
     pullback_ok   = ema50_4h <= close_4h <= pullback_high
 
     rsi_window       = rsi_series.iloc[-RSI_LOOKBACK:]

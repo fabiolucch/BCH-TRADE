@@ -40,8 +40,8 @@ TIMEFRAME_ENTRY = os.getenv("TIMEFRAME_ENTRY", "4h")  # Gatilho de entrada
 # ─────────────────────────────────────────────────────────────
 RISK_PCT      = float(os.getenv("RISK_PCT", "1.5"))
 RR_RATIO      = float(os.getenv("RR_RATIO", "2.0"))
-SL_CANDLES    = int(os.getenv("SL_CANDLES", "5"))
-SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "1.0"))
+SL_CANDLES    = int(os.getenv("SL_CANDLES", "3"))
+SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.5"))
 
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop
@@ -54,8 +54,9 @@ TRAILING_STOP_PCT       = float(os.getenv("TRAILING_STOP_PCT", "2.0"))
 # ─────────────────────────────────────────────────────────────
 # Parâmetros do RSI
 # ─────────────────────────────────────────────────────────────
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "30.0"))
-RSI_LOOKBACK = int(os.getenv("RSI_LOOKBACK", "3"))
+RSI_OVERSOLD       = float(os.getenv("RSI_OVERSOLD", "40.0"))
+RSI_LOOKBACK       = int(os.getenv("RSI_LOOKBACK", "5"))
+PULLBACK_TOLERANCE = float(os.getenv("PULLBACK_TOLERANCE", "5.0"))  # % acima da EMA20
 
 # ─────────────────────────────────────────────────────────────
 # Telegram

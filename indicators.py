@@ -24,6 +24,7 @@ from config import (
     RSI_OVERSOLD,
     RSI_LOOKBACK,
     SL_CANDLES,
+    PULLBACK_TOLERANCE,
 )
 
 logger = logging.getLogger("bot")
@@ -106,8 +107,7 @@ def calculate_indicators(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]
     rsi_current  = float(rsi_series.iloc[-1])
     rsi_previous = float(rsi_series.iloc[-2])
 
-    # Tolerância de 2% acima da EMA20 para capturar toques levemente acima
-    pullback_high = ema20_4h * 1.02
+    pullback_high = ema20_4h * (1.0 + PULLBACK_TOLERANCE / 100.0)
     pullback_ok   = ema50_4h <= close_4h <= pullback_high
 
     rsi_window       = rsi_series.iloc[-RSI_LOOKBACK:]
