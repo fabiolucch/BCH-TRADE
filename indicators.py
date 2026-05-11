@@ -6,9 +6,7 @@ Indicadores calculados:
   - Gráfico 1D : EMA 50  (filtro de tendência)
   - Gráfico 4H : EMA 20, EMA 50, RSI 14  (gatilho de entrada)
 
-A função principal `calculate_indicators()` retorna um dicionário com todos os
-valores e as flags booleanas de cada condição, facilitando o log e a decisão
-no loop principal.
+Usa apenas pandas/numpy — sem dependência de pandas_ta.
 """
 
 import logging
@@ -16,7 +14,7 @@ from typing import Dict, Any
 
 import ccxt
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 
 from config import (
     SYMBOL,
@@ -29,6 +27,33 @@ from config import (
 )
 
 logger = logging.getLogger("bot")
+
+
+# ─────────────────────────────────────────────────────────────
+# Funções de indicadores (implementação pura pandas/numpy)
+# ─────────────────────────────────────────────────────────────
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    """EMA usando pandas ewm com adjust=False (equivalente ao TA padrão)."""
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
+    """
+    RSI de Wilder (Smoothed Moving Average dos ganhos/perdas).
+    Equivalente ao RSI padrão usado em TradingView e pandas_ta.
+    """
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    # Primeira média: SMA simples
+    avg_gain = gain.ewm(alpha=1 / length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / length, adjust=False).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 
 # ─────────────────────────────────────────────────────────────
@@ -45,9 +70,6 @@ def fetch_ohlcv(
     Baixa candles OHLCV da exchange e retorna um DataFrame limpo.
 
     Colunas: open, high, low, close, volume (índice = timestamp UTC).
-
-    Lança ccxt.NetworkError ou ccxt.ExchangeError em caso de falha,
-    permitindo que o chamador decida como tratar.
     """
     try:
         raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -101,55 +123,46 @@ def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
     # ── Gráfico 1D: Tendência principal ──────────────────────────────────────
     df_1d = fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_TREND, OHLCV_LIMIT)
 
-    # pandas_ta: calcula EMA e adiciona coluna 'EMA_50' ao DataFrame
-    df_1d.ta.ema(length=50, append=True)
+    df_1d["EMA_50"] = _ema(df_1d["close"], 50)
 
     close_1d = float(df_1d["close"].iloc[-1])
     ema50_1d = float(df_1d["EMA_50"].iloc[-1])
 
-    # Condição 1: preço de fechamento diário acima da EMA 50 diária
     trend_ok = close_1d > ema50_1d
 
     # ── Gráfico 4H: Gatilho de entrada ───────────────────────────────────────
     df_4h = fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_ENTRY, OHLCV_LIMIT)
 
-    df_4h.ta.ema(length=20, append=True)
-    df_4h.ta.ema(length=50, append=True)
-    df_4h.ta.rsi(length=14, append=True)
+    df_4h["EMA_20"] = _ema(df_4h["close"], 20)
+    df_4h["EMA_50"] = _ema(df_4h["close"], 50)
+    df_4h["RSI_14"] = _rsi(df_4h["close"], 14)
 
     close_4h  = float(df_4h["close"].iloc[-1])
     ema20_4h  = float(df_4h["EMA_20"].iloc[-1])
     ema50_4h  = float(df_4h["EMA_50"].iloc[-1])
 
-    # Remove NaN gerados pelo período de aquecimento dos indicadores
     rsi_series   = df_4h["RSI_14"].dropna()
     rsi_current  = float(rsi_series.iloc[-1])
     rsi_previous = float(rsi_series.iloc[-2])
 
     # Condição 2: pullback na zona de suporte entre EMA50 e EMA20
-    # Tolerância de 2% acima da EMA20 para capturar toques levemente acima
     pullback_high = ema20_4h * 1.02
     pullback_ok   = ema50_4h <= close_4h <= pullback_high
 
-    # Condição 3: RSI esteve em sobrevenda (< 30) nos últimos N candles
-    #             E está atualmente apontando para cima (reversão)
+    # Condição 3: RSI esteve em sobrevenda nos últimos N candles E está subindo
     rsi_window        = rsi_series.iloc[-RSI_LOOKBACK:]
     rsi_was_oversold  = bool((rsi_window < RSI_OVERSOLD).any())
     rsi_recovering    = rsi_current > rsi_previous
     rsi_ok            = rsi_was_oversold and rsi_recovering
 
-    # Mínima dos últimos N candles de 4H (usada para calcular o Stop Loss)
     lowest_low = float(df_4h["low"].iloc[-SL_CANDLES:].min())
 
-    # ── Sinal final: todas as condições verdadeiras ───────────────────────────
     signal = trend_ok and pullback_ok and rsi_ok
 
     result: Dict[str, Any] = {
-        # Valores 1D
         "close_1d"         : close_1d,
         "ema50_1d"         : ema50_1d,
         "trend_ok"         : trend_ok,
-        # Valores 4H
         "close_4h"         : close_4h,
         "ema20_4h"         : ema20_4h,
         "ema50_4h"         : ema50_4h,
@@ -157,16 +170,12 @@ def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
         "rsi_previous"     : rsi_previous,
         "rsi_was_oversold" : rsi_was_oversold,
         "rsi_recovering"   : rsi_recovering,
-        # Flags de condição
         "pullback_ok"      : pullback_ok,
         "rsi_ok"           : rsi_ok,
-        # Stop Loss base
         "lowest_low_5c"    : lowest_low,
-        # Sinal de entrada
         "signal"           : signal,
     }
 
-    # Log resumido sempre visível no terminal
     logger.info(
         "[INDICADORES] "
         f"1D → Close={close_1d:.4f} | EMA50={ema50_1d:.4f} | "
