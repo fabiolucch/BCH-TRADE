@@ -23,6 +23,8 @@ from config import (
     LOG_FILE,
     SYMBOLS,
     TESTNET,
+    TIMEFRAME_TREND,
+    TIMEFRAME_ENTRY,
     create_exchange,
 )
 from indicators import calculate_indicators
@@ -142,17 +144,18 @@ def run_bot() -> None:
                             reasons = []
                             if not indicators["trend_ok"]:
                                 reasons.append(
-                                    f"Tendência: Close_1D={indicators['close_1d']:.4f} "
-                                    f"< EMA50_1D={indicators['ema50_1d']:.4f}"
+                                    f"Tendência ({TIMEFRAME_TREND.upper()}): "
+                                    f"Close={indicators['close_1d']:.4f} < EMA50={indicators['ema50_1d']:.4f}"
                                 )
                             if not indicators["pullback_ok"]:
                                 reasons.append(
-                                    f"Pullback: Close_4H={indicators['close_4h']:.4f} fora da zona "
+                                    f"Pullback ({TIMEFRAME_ENTRY.upper()}): "
+                                    f"Close={indicators['close_4h']:.4f} fora da zona "
                                     f"[EMA50={indicators['ema50_4h']:.4f} ~ EMA20={indicators['ema20_4h']:.4f}]"
                                 )
                             if not indicators["rsi_ok"]:
                                 reasons.append(
-                                    f"RSI={indicators['rsi_current']:.2f} | "
+                                    f"RSI ({TIMEFRAME_ENTRY.upper()})={indicators['rsi_current']:.2f} | "
                                     f"Sobrevenda={'Sim' if indicators['rsi_was_oversold'] else 'Não'} | "
                                     f"Recuperando={'Sim' if indicators['rsi_recovering'] else 'Não'}"
                                 )
