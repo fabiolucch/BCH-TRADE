@@ -1,5 +1,5 @@
 """
-main.py — Ponto de entrada do BCH/USDC Swing Trade Bot.
+main.py — Ponto de entrada do BCH/USDT Swing Trade Bot.
 
 Loop infinito que executa a cada CHECK_INTERVAL segundos (padrão: 15 min).
 
@@ -76,7 +76,7 @@ def run_bot() -> None:
 
     # ── Banner de inicialização ───────────────────────────────────────────────
     logger.info("═" * 62)
-    logger.info("  BCH/USDC Swing Trade Bot  —  Iniciando")
+    logger.info("  BCH/USDT Swing Trade Bot  —  Iniciando")
     logger.info(f"  Par       : {SYMBOL}")
     logger.info(f"  Modo      : {'TESTNET / Paper Trading' if TESTNET else '⚠  PRODUÇÃO (dinheiro real)'}")
     logger.info(f"  Intervalo : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min por ciclo)")
