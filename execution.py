@@ -210,7 +210,7 @@ def place_market_buy(exchange: ccxt.Exchange, quantity: float) -> Optional[Dict]
     """Envia ordem de compra a mercado e retorna o objeto da ordem."""
     try:
         logger.info(f"[ORDEM] Enviando COMPRA a mercado: {quantity:.6f} {SYMBOL}")
-        order = exchange.create_market_buy_order(SYMBOL, quantity)
+        order = exchange.create_market_buy_order(SYMBOL, quantity, params={"tgtCcy": "base_ccy"})
         logger.info(
             f"[ORDEM] Compra enviada → ID={order.get('id')} | "
             f"Status={order.get('status')} | "

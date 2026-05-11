@@ -239,7 +239,8 @@ def enviar_ordem_teste(
         "tdMode" : TD_MODE,         # "cash" para spot
         "side"   : side,
         "ordType": ORDER_TYPE,      # "market"
-        "sz"     : sz,              # quantidade em moeda base (BTC)
+        "sz"     : sz,              # quantidade em moeda base (BCH)
+        "tgtCcy" : "base_ccy",      # sz refere-se à moeda base, não à cotação
     }
     body = json.dumps(payload)
 
