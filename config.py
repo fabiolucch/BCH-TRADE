@@ -52,6 +52,13 @@ SL_CANDLES       = int(os.getenv("SL_CANDLES", "2"))
 SL_BUFFER_PCT    = float(os.getenv("SL_BUFFER_PCT", "0.5"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "25.0"))
 
+# Saldo mínimo USDT para permitir abertura de posição
+MIN_BALANCE_USDT = float(os.getenv("MIN_BALANCE_USDT", "50.0"))
+
+# Reserva de taxa: percentual do saldo descontado antes de calcular posição
+# Cobre taxas de entrada + saída (~0.1% cada) com margem de segurança
+FEE_RESERVE_PCT  = float(os.getenv("FEE_RESERVE_PCT", "0.3"))
+
 # ─────────────────────────────────────────────────────────────
 # Trailing Stop
 # ─────────────────────────────────────────────────────────────

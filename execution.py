@@ -2,20 +2,27 @@
 execution.py — Lógica de execução de ordens, dimensionamento de posição,
                trailing stop, monitoramento de saída e registro de histórico.
 
+Gerenciamento de capital:
+  - Saldo real é consultado a cada abertura (nunca usa saldo desatualizado)
+  - FEE_RESERVE_PCT deduzido do saldo antes do cálculo (cobre taxas OKX)
+  - MAX_POSITION_PCT limita cada posição a % do saldo atual
+  - MIN_BALANCE_USDT impede abertura quando saldo está baixo
+  - Com 4 pares: cada posição usa saldo decrescente — nunca ultrapassa 100%
+
 Fluxo ao detectar sinal de entrada:
-  1. Busca saldo USDT disponível
-  2. Calcula Stop Loss e Take Profit
-  3. Dimensiona quantidade com base no risco máximo (RISK_PCT% do saldo)
-  4. Envia ordem de compra a mercado
-  5. Tenta posicionar ordens de saída (TP limit + SL algo na OKX)
-  6. Se a API não suportar, ativa modo de monitoramento por software
-  7. Persiste estado em JSON por par (state_LTC_USDT.json, etc.)
+  1. Busca saldo USDT real da exchange
+  2. Verifica saldo mínimo e aplica buffer de taxa
+  3. Calcula Stop Loss e Take Profit
+  4. Dimensiona quantidade com base no saldo efetivo
+  5. Envia ordem de compra a mercado
+  6. Tenta posicionar ordens de saída (TP limit + SL algo na OKX)
+  7. Fallback: monitoramento por software
+  8. Persiste estado em JSON por par
 
 Trailing Stop:
   - Ativa quando lucro >= TRAILING_ACTIVATION_PCT
-  - Trail SL = máxima_histórica × (1 − TRAILING_STOP_PCT / 100)
-  - Ao ativar, cancela ordens abertas e migra para modo monitor
-  - Atualiza o trail SL a cada nova máxima
+  - Trail SL = máxima_histórica x (1 - TRAILING_STOP_PCT / 100)
+  - Cancela ordens abertas ao ativar e migra para modo monitor
 """
 
 import json
@@ -33,6 +40,8 @@ from config import (
     RR_RATIO,
     SL_BUFFER_PCT,
     MAX_POSITION_PCT,
+    MIN_BALANCE_USDT,
+    FEE_RESERVE_PCT,
     TRAILING_ACTIVATION_PCT,
     TRAILING_STOP_PCT,
     state_file_for,
@@ -64,7 +73,6 @@ _EMPTY_STATE: Dict[str, Any] = {
 
 
 def load_state(symbol: str) -> Dict[str, Any]:
-    """Carrega o estado da posição do arquivo JSON do par; retorna vazio se não existir."""
     path = state_file_for(symbol)
     if os.path.exists(path):
         try:
@@ -76,7 +84,6 @@ def load_state(symbol: str) -> Dict[str, Any]:
 
 
 def save_state(state: Dict[str, Any], symbol: str) -> None:
-    """Persiste o estado da posição no arquivo JSON do par."""
     path = state_file_for(symbol)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -86,7 +93,6 @@ def save_state(state: Dict[str, Any], symbol: str) -> None:
 
 
 def reset_state(symbol: str) -> None:
-    """Reseta para estado sem posição aberta."""
     save_state(dict(_EMPTY_STATE), symbol)
     logger.debug(f"[{symbol}] Estado resetado.")
 
@@ -96,6 +102,11 @@ def reset_state(symbol: str) -> None:
 # ═════════════════════════════════════════════════════════════
 
 def calculate_sl_tp(entry_price: float, lowest_low: float) -> Tuple[float, float]:
+    """
+    Calcula Stop Loss e Take Profit.
+    SL: abaixo da mínima dos últimos N candles com buffer.
+    TP: entry + (risco x RR_RATIO).
+    """
     sl_price      = lowest_low * (1.0 - SL_BUFFER_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
 
@@ -114,11 +125,19 @@ def calculate_sl_tp(entry_price: float, lowest_low: float) -> Tuple[float, float
 
 
 def calculate_position_size(
-    balance_usdt: float,
+    effective_balance: float,
     entry_price: float,
     sl_price: float,
 ) -> float:
-    max_risk      = balance_usdt * (RISK_PCT / 100.0)
+    """
+    Calcula a quantidade a comprar com base no saldo efetivo (já descontado de taxas).
+
+    Regras:
+      - risco_max    = effective_balance x RISK_PCT%
+      - quantidade   = risco_max / (entry - sl)
+      - teto         = effective_balance x MAX_POSITION_PCT%  (nunca ultrapassa)
+    """
+    max_risk      = effective_balance * (RISK_PCT / 100.0)
     risk_per_unit = entry_price - sl_price
 
     if risk_per_unit <= 0:
@@ -126,7 +145,8 @@ def calculate_position_size(
 
     quantity = max_risk / risk_per_unit
 
-    max_position_value = balance_usdt * (MAX_POSITION_PCT / 100.0)
+    # Aplica teto: nunca alocar mais que MAX_POSITION_PCT do saldo efetivo
+    max_position_value = effective_balance * (MAX_POSITION_PCT / 100.0)
     position_value     = quantity * entry_price
     if position_value > max_position_value:
         quantity = max_position_value / entry_price
@@ -136,9 +156,9 @@ def calculate_position_size(
         )
 
     logger.info(
-        f"[DIMENSIONAMENTO] Saldo={balance_usdt:.2f} USDT | "
+        f"[DIMENSIONAMENTO] Saldo efetivo={effective_balance:.2f} USDT | "
         f"Risco máx={max_risk:.2f} USDT ({RISK_PCT}%) | "
-        f"Posição={quantity * entry_price:.2f} USDT ({MAX_POSITION_PCT}% máx) | "
+        f"Posição={quantity * entry_price:.2f} USDT | "
         f"Entry={entry_price:.4f} | SL={sl_price:.4f} | → Qty={quantity:.6f}"
     )
     return quantity
@@ -219,7 +239,7 @@ def place_market_buy(
         )
         return order
     except ccxt.InsufficientFunds as exc:
-        logger.error(f"[{symbol}] Saldo insuficiente: {exc}")
+        logger.error(f"[{symbol}] Saldo insuficiente para compra: {exc}")
         return None
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
         logger.error(f"[{symbol}] Erro da exchange ao comprar: {exc}")
@@ -540,16 +560,37 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict, symbol: str) -> bo
 
 def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> bool:
     """
-    Executa o fluxo completo de abertura de uma nova posição para o par informado.
+    Executa o fluxo completo de abertura de uma nova posição.
+
+    Proteções de capital aplicadas:
+      1. Saldo real consultado direto da exchange (nunca cache)
+      2. Verifica saldo mínimo (MIN_BALANCE_USDT)
+      3. Aplica buffer de taxa (FEE_RESERVE_PCT) antes do dimensionamento
+      4. MAX_POSITION_PCT limita teto da posição
+      5. Saldo decresce a cada par aberto no mesmo ciclo (proteção natural)
     """
     try:
+        # ── 1. Saldo real da exchange ─────────────────────────────────────────
         balance = get_usdt_balance(exchange)
-        if balance < 10.0:
+
+        if balance < MIN_BALANCE_USDT:
             logger.warning(
-                f"[{symbol}] Saldo insuficiente: {balance:.2f} USDT (mínimo: 10 USDT)."
+                f"[{symbol}] Saldo insuficiente: {balance:.2f} USDT "
+                f"(mínimo configurado: {MIN_BALANCE_USDT:.2f} USDT). "
+                f"Operação cancelada."
             )
             return False
 
+        # ── 2. Saldo efetivo (descontado de reserva para taxas) ───────────────
+        # OKX cobra ~0.1% por ordem. FEE_RESERVE_PCT=0.3% cobre entrada + saída
+        effective_balance = balance * (1.0 - FEE_RESERVE_PCT / 100.0)
+        logger.info(
+            f"[{symbol}] [CAPITAL] Saldo real={balance:.2f} USDT | "
+            f"Reserva taxa={FEE_RESERVE_PCT}% | "
+            f"Saldo efetivo={effective_balance:.2f} USDT"
+        )
+
+        # ── 3. SL / TP ──────────────────────────────────────────────────
         entry_est  = indicators["close_entry"]
         lowest_low = indicators["lowest_low_5c"]
         sl_price, tp_price = calculate_sl_tp(entry_est, lowest_low)
@@ -559,16 +600,19 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> boo
             f"SL={sl_price:.4f} | TP={tp_price:.4f} | R/R=1:{RR_RATIO}"
         )
 
-        quantity = calculate_position_size(balance, entry_est, sl_price)
+        # ── 4. Dimensionamento com saldo efetivo ────────────────────────────
+        quantity = calculate_position_size(effective_balance, entry_est, sl_price)
         quantity = _apply_market_precision(exchange, quantity, symbol)
         logger.info(f"[{symbol}] [ENTRADA] Qty ajustada (precisão): {quantity:.6f}")
 
+        # ── 5. Ordem de compra ────────────────────────────────────────────
         buy_order = place_market_buy(exchange, quantity, symbol)
         if not buy_order:
             return False
 
         time.sleep(2)
 
+        # ── 6. Preço real de execução ──────────────────────────────────────
         entry_real = entry_est
         qty_real   = quantity
         try:
@@ -583,14 +627,16 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict, symbol: str) -> boo
                 sl_price, tp_price = calculate_sl_tp(entry_real, lowest_low)
                 logger.info(
                     f"[{symbol}] Preço real: {entry_real:.4f} | "
-                    f"SL={sl_price:.4f} | TP={tp_price:.4f}"
+                    f"SL recalc={sl_price:.4f} | TP recalc={tp_price:.4f}"
                 )
         except Exception as exc:
             logger.warning(f"[{symbol}] Preço real não obtido: {exc}. Usando estimativa.")
 
+        # ── 7. Ordens de saída ─────────────────────────────────────────────
         exit_info  = place_exit_orders(exchange, qty_real, tp_price, sl_price, symbol)
         entry_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+        # ── 8. Persiste estado ────────────────────────────────────────────
         state = {
             "is_open"       : True,
             "entry_price"   : entry_real,
