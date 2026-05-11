@@ -1,0 +1,19 @@
+[Unit]
+Description=BCH Trade Bot — Triple EMA Cross + RSI Filter
+Documentation=https://github.com/fabiolucch/bch-trade
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=__WORKDIR__/venv/bin/python main.py
+Restart=on-failure
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
