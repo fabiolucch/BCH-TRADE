@@ -5,7 +5,7 @@ O que este script faz, em ordem:
   1. Autentica via HMAC-SHA256 com header x-simulated-trading: 1
   2. Consulta o saldo da conta demo
   3. Se não houver USDC nem USDT utilizáveis, credita 5000 USDT via endpoint demo
-  4. Envia uma ordem de compra a mercado de teste no par BCH-USDC (tdMode=cash)
+  4. Envia uma ordem de compra a mercado de teste no par BCH-USDT (tdMode=cash)
 
 Não depende do ccxt — usa apenas `requests` para controle total dos headers.
 
@@ -40,7 +40,7 @@ BASE_URL   = "https://www.okx.com"      # mesmo domínio para demo e produção
 DEMO_HEADER = {"x-simulated-trading": "1"}
 
 # Par e parâmetros da ordem de teste
-TEST_SYMBOL  = "BCH-USDC"               # instId no formato OKX — mesmo par do bot
+TEST_SYMBOL  = "BCH-USDT"               # instId no formato OKX — mesmo par do bot
 ORDER_SIDE   = "buy"
 ORDER_TYPE   = "market"
 TD_MODE      = "cash"                   # spot/cash no modo demo
@@ -308,6 +308,7 @@ def main():
     saldo_util = saldo_usdc + saldo_usdt
 
     print(f"\n   Saldo utilizável: USDC={saldo_usdc:.2f} | USDT={saldo_usdt:.2f} | Total≈{saldo_util:.2f}")
+    print(f"   Par de teste usa USDT — saldo de {saldo_usdt:.2f} USDT será usado.")
 
     # 4. Se saldo insuficiente (< 10 USDC/USDT), credita USDT no demo
     if saldo_util < 10.0:

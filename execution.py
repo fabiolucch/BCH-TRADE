@@ -132,8 +132,8 @@ def calculate_position_size(
     quantity = max_risk_usdc / risk_per_unit
 
     logger.info(
-        f"[DIMENSIONAMENTO] Saldo={balance_usdc:.2f} USDC | "
-        f"Risco máx={max_risk_usdc:.2f} USDC ({RISK_PCT}%) | "
+        f"[DIMENSIONAMENTO] Saldo={balance_usdc:.2f} USDT | "
+        f"Risco máx={max_risk_usdc:.2f} USDT ({RISK_PCT}%) | "
         f"Entry={entry_price:.4f} | SL={sl_price:.4f} | "
         f"Risco/unit={risk_per_unit:.6f} | → Qty={quantity:.6f} BCH"
     )
@@ -145,14 +145,14 @@ def calculate_position_size(
 # ═════════════════════════════════════════════════════════════
 
 def get_usdc_balance(exchange: ccxt.Exchange) -> float:
-    """Retorna o saldo livre de USDC na conta spot."""
+    """Retorna o saldo livre de USDT na conta spot."""
     try:
         balance = exchange.fetch_balance()
-        usdc    = float(balance.get("USDC", {}).get("free", 0.0))
-        logger.info(f"[SALDO] USDC disponível: {usdc:.2f}")
+        usdc    = float(balance.get("USDT", {}).get("free", 0.0))
+        logger.info(f"[SALDO] USDT disponível: {usdc:.2f}")
         return usdc
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        logger.error(f"Erro ao buscar saldo USDC: {exc}")
+        logger.error(f"Erro ao buscar saldo USDT: {exc}")
         raise
 
 
@@ -493,8 +493,8 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
         balance = get_usdc_balance(exchange)
         if balance < 10.0:
             logger.warning(
-                f"[ENTRADA] Saldo insuficiente para operar: {balance:.2f} USDC "
-                f"(mínimo recomendado: 10 USDC)."
+                f"[ENTRADA] Saldo insuficiente para operar: {balance:.2f} USDT "
+                f"(mínimo recomendado: 10 USDT)."
             )
             return False
 
