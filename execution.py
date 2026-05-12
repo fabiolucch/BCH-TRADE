@@ -3,7 +3,7 @@ execution.py — Lógica de execução de ordens, dimensionamento de posição e
                monitoramento de saída (Stop Loss / Take Profit).
 
 Fluxo ao detectar sinal de entrada:
-  1. Busca saldo USDC disponível
+  1. Busca saldo {QUOTE_CURRENCY} disponível
   2. Calcula Stop Loss e Take Profit
   3. Dimensiona a quantidade de BCH com base no risco máximo (1.5% do saldo)
   4. Envia ordem de compra a mercado
@@ -25,14 +25,21 @@ from typing import Any, Dict, Optional, Tuple
 import ccxt
 
 from config import (
+    QUOTE_CURRENCY,
     RISK_PCT,
     RR_RATIO,
     SL_BUFFER_PCT,
     STATE_FILE,
-    SYMBOL,
 )
 
 logger = logging.getLogger("bot")
+
+
+def _state_file_for_symbol(symbol: str) -> str:
+    safe = symbol.replace('/', '_').replace(':', '_')
+    if STATE_FILE == "position_state.json":
+        return f"position_state_{safe}.json"
+    return STATE_FILE
 
 
 # ═════════════════════════════════════════════════════════════
@@ -51,29 +58,30 @@ _EMPTY_STATE: Dict[str, Any] = {
 }
 
 
-def load_state() -> Dict[str, Any]:
+def load_state(symbol: str) -> Dict[str, Any]:
     """Carrega o estado da posição do arquivo JSON; retorna estado vazio se não existir."""
-    if os.path.exists(STATE_FILE):
+    state_file = _state_file_for_symbol(symbol)
+    if os.path.exists(state_file):
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(state_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"Falha ao ler arquivo de estado ({exc}). Usando estado vazio.")
     return dict(_EMPTY_STATE)
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: Dict[str, Any], symbol: str) -> None:
     """Persiste o estado da posição no arquivo JSON."""
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(_state_file_for_symbol(symbol), "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
     except OSError as exc:
         logger.error(f"Falha ao salvar arquivo de estado: {exc}")
 
 
-def reset_state() -> None:
+def reset_state(symbol: str) -> None:
     """Reseta para estado sem posição aberta e apaga o arquivo de estado."""
-    save_state(dict(_EMPTY_STATE))
+    save_state(dict(_EMPTY_STATE), symbol)
     logger.debug("Estado da posição resetado.")
 
 
@@ -132,8 +140,8 @@ def calculate_position_size(
     quantity = max_risk_usdc / risk_per_unit
 
     logger.info(
-        f"[DIMENSIONAMENTO] Saldo={balance_usdc:.2f} USDC | "
-        f"Risco máx={max_risk_usdc:.2f} USDC ({RISK_PCT}%) | "
+        f"[DIMENSIONAMENTO] Saldo={balance_usdc:.2f} {QUOTE_CURRENCY} | "
+        f"Risco máx={max_risk_usdc:.2f} {QUOTE_CURRENCY} ({RISK_PCT}%) | "
         f"Entry={entry_price:.4f} | SL={sl_price:.4f} | "
         f"Risco/unit={risk_per_unit:.6f} | → Qty={quantity:.6f} BCH"
     )
@@ -144,22 +152,27 @@ def calculate_position_size(
 # CONSULTAS À EXCHANGE
 # ═════════════════════════════════════════════════════════════
 
-def get_usdc_balance(exchange: ccxt.Exchange) -> float:
-    """Retorna o saldo livre de USDC na conta spot."""
+def get_quote_balance(exchange: ccxt.Exchange) -> float:
+    """Retorna o saldo livre da moeda de cotação (ex.: USDT) na conta spot."""
     try:
         balance = exchange.fetch_balance()
-        usdc    = float(balance.get("USDC", {}).get("free", 0.0))
-        logger.info(f"[SALDO] USDC disponível: {usdc:.2f}")
-        return usdc
+        amount = float(balance.get(QUOTE_CURRENCY, {}).get("free", 0.0))
+        logger.info(f"[SALDO] {QUOTE_CURRENCY} disponível: {amount:.2f}")
+        return amount
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
-        logger.error(f"Erro ao buscar saldo USDC: {exc}")
+        logger.error(f"Erro ao buscar saldo {QUOTE_CURRENCY}: {exc}")
         raise
 
 
-def get_current_price(exchange: ccxt.Exchange) -> float:
+def get_usdc_balance(exchange: ccxt.Exchange) -> float:
+    """Compatibilidade retroativa; usa get_quote_balance."""
+    return get_quote_balance(exchange)
+
+
+def get_current_price(exchange: ccxt.Exchange, symbol: str) -> float:
     """Retorna o último preço negociado do par."""
     try:
-        ticker = exchange.fetch_ticker(SYMBOL)
+        ticker = exchange.fetch_ticker(symbol)
         return float(ticker["last"])
     except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
         logger.error(f"Erro ao buscar preço atual: {exc}")
@@ -168,6 +181,7 @@ def get_current_price(exchange: ccxt.Exchange) -> float:
 
 def _apply_market_precision(
     exchange: ccxt.Exchange,
+    symbol: str,
     quantity: float,
 ) -> float:
     """
@@ -175,7 +189,7 @@ def _apply_market_precision(
     Arredonda para baixo para evitar rejeição por excesso de casas decimais.
     """
     try:
-        market    = exchange.market(SYMBOL)
+        market    = exchange.market(symbol)
         precision = market.get("precision", {}).get("amount", None)
         min_qty   = market.get("limits", {}).get("amount", {}).get("min", 0.0)
 
@@ -193,7 +207,7 @@ def _apply_market_precision(
         if min_qty and quantity < min_qty:
             raise ValueError(
                 f"Quantidade calculada ({quantity:.8f}) menor que o mínimo "
-                f"permitido ({min_qty}) para {SYMBOL}."
+                f"permitido ({min_qty}) para {symbol}."
             )
 
         return quantity
@@ -206,11 +220,12 @@ def _apply_market_precision(
 # ENVIO DE ORDENS
 # ═════════════════════════════════════════════════════════════
 
-def place_market_buy(exchange: ccxt.Exchange, quantity: float) -> Optional[Dict]:
+def place_market_buy(exchange: ccxt.Exchange,
+    symbol: str, quantity: float) -> Optional[Dict]:
     """Envia ordem de compra a mercado e retorna o objeto da ordem."""
     try:
-        logger.info(f"[ORDEM] Enviando COMPRA a mercado: {quantity:.6f} {SYMBOL}")
-        order = exchange.create_market_buy_order(SYMBOL, quantity)
+        logger.info(f"[ORDEM] Enviando COMPRA a mercado: {quantity:.6f} {symbol}")
+        order = exchange.create_market_buy_order(symbol, quantity)
         logger.info(
             f"[ORDEM] Compra enviada → ID={order.get('id')} | "
             f"Status={order.get('status')} | "
@@ -243,7 +258,7 @@ def _place_okx_algo_sl(
         "slOrdPx"      : "-1",         # -1 = executar a mercado ao atingir trigger
         "slTriggerPxType": "last",
     }
-    return exchange.create_order(SYMBOL, "market", "sell", quantity, params=params)
+    return exchange.create_order(symbol, "market", "sell", quantity, params=params)
 
 
 def place_exit_orders(
@@ -270,7 +285,7 @@ def place_exit_orders(
     # ── Tentativa 1: TP como limit sell ──────────────────────────────────────
     tp_order_id = None
     try:
-        tp_order    = exchange.create_limit_sell_order(SYMBOL, quantity, tp_price)
+        tp_order    = exchange.create_limit_sell_order(symbol, quantity, tp_price)
         tp_order_id = tp_order.get("id")
         logger.info(
             f"[SAÍDA] Ordem TP (limit sell) criada → "
@@ -291,7 +306,7 @@ def place_exit_orders(
                     f"ID={sl_order_id} | Trigger={sl_price:.4f}"
                 )
             else:
-                sl_order    = exchange.create_stop_market_order(SYMBOL, "sell", quantity, sl_price)
+                sl_order    = exchange.create_stop_market_order(symbol, "sell", quantity, sl_price)
                 sl_order_id = sl_order.get("id")
                 logger.info(
                     f"[SAÍDA] Ordem SL (stop market) criada → "
@@ -301,7 +316,7 @@ def place_exit_orders(
             logger.warning(f"[SAÍDA] Falha ao criar ordem SL: {exc}")
             # Cancela o TP para não ficar uma perna órfã
             try:
-                exchange.cancel_order(tp_order_id, SYMBOL)
+                exchange.cancel_order(tp_order_id, symbol)
                 logger.info("[SAÍDA] Ordem TP cancelada (rollback — SL falhou).")
             except Exception:
                 pass
@@ -329,7 +344,7 @@ def close_position_market(
     """Fecha a posição integralmente com ordem de venda a mercado."""
     try:
         logger.info(f"[SAÍDA] Fechando posição a mercado. Motivo: {reason}")
-        order = exchange.create_market_sell_order(SYMBOL, quantity)
+        order = exchange.create_market_sell_order(symbol, quantity)
         logger.info(
             f"[SAÍDA] Venda executada → ID={order.get('id')} | "
             f"Status={order.get('status')}"
@@ -343,13 +358,14 @@ def close_position_market(
         return False
 
 
-def _cancel_exit_orders(exchange: ccxt.Exchange, state: Dict) -> None:
+def _cancel_exit_orders(exchange: ccxt.Exchange,
+    symbol: str, state: Dict) -> None:
     """Tenta cancelar ordens de TP e SL abertas (chamado antes de fechar a mercado)."""
     for key in ("tp_order_id", "sl_order_id"):
         order_id = state.get(key)
         if order_id:
             try:
-                exchange.cancel_order(order_id, SYMBOL)
+                exchange.cancel_order(order_id, symbol)
                 logger.info(f"[ORDENS] Ordem {key} cancelada: {order_id}")
             except Exception as exc:
                 logger.warning(f"Não foi possível cancelar {key} ({order_id}): {exc}")
@@ -359,7 +375,8 @@ def _cancel_exit_orders(exchange: ccxt.Exchange, state: Dict) -> None:
 # MONITORAMENTO DE POSIÇÃO ABERTA
 # ═════════════════════════════════════════════════════════════
 
-def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
+def check_open_position(exchange: ccxt.Exchange,
+    symbol: str, state: Dict) -> bool:
     """
     Verifica se a posição aberta deve ser encerrada (SL ou TP atingido).
 
@@ -382,7 +399,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
     # ── Modo monitoramento por software ──────────────────────────────────────
     if state.get("exit_mode") == "monitor":
         try:
-            price   = get_current_price(exchange)
+            price   = get_current_price(exchange, symbol)
             pnl_pct = ((price - entry) / entry) * 100.0
 
             logger.info(
@@ -397,7 +414,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                     f"| Ganho≈{pnl_pct:+.2f}%"
                 )
                 if close_position_market(exchange, quantity, "Take Profit atingido"):
-                    reset_state()
+                    reset_state(symbol)
                     return False
 
             elif price <= sl_price:
@@ -406,7 +423,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                     f"| Perda≈{pnl_pct:+.2f}%"
                 )
                 if close_position_market(exchange, quantity, "Stop Loss atingido"):
-                    reset_state()
+                    reset_state(symbol)
                     return False
 
         except Exception as exc:
@@ -415,7 +432,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
     # ── Modo com ordens abertas na exchange ───────────────────────────────────
     else:
         try:
-            price   = get_current_price(exchange)
+            price   = get_current_price(exchange, symbol)
             pnl_pct = ((price - entry) / entry) * 100.0
 
             logger.info(
@@ -432,7 +449,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                 if not order_id:
                     continue
 
-                order  = exchange.fetch_order(order_id, SYMBOL)
+                order  = exchange.fetch_order(order_id, symbol)
                 status = order.get("status", "")
 
                 if status == "closed":
@@ -445,10 +462,10 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                     other_id = state.get(other_key)
                     if other_id:
                         try:
-                            exchange.cancel_order(other_id, SYMBOL)
+                            exchange.cancel_order(other_id, symbol)
                         except Exception:
                             pass
-                    reset_state()
+                    reset_state(symbol)
                     return False
 
                 elif status == "canceled":
@@ -460,7 +477,7 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
                     state["exit_mode"]    = "monitor"
                     state["tp_order_id"]  = None
                     state["sl_order_id"]  = None
-                    save_state(state)
+                    save_state(state, symbol)
                     break
 
         except Exception as exc:
@@ -473,7 +490,8 @@ def check_open_position(exchange: ccxt.Exchange, state: Dict) -> bool:
 # FLUXO COMPLETO DE ABERTURA DE POSIÇÃO
 # ═════════════════════════════════════════════════════════════
 
-def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
+def open_position(exchange: ccxt.Exchange,
+    symbol: str, indicators: Dict) -> bool:
     """
     Executa o fluxo completo de abertura de uma nova posição:
 
@@ -490,11 +508,11 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
     """
     try:
         # ── 1. Saldo disponível ───────────────────────────────────────────────
-        balance = get_usdc_balance(exchange)
+        balance = get_quote_balance(exchange)
         if balance < 10.0:
             logger.warning(
-                f"[ENTRADA] Saldo insuficiente para operar: {balance:.2f} USDC "
-                f"(mínimo recomendado: 10 USDC)."
+                f"[ENTRADA] Saldo insuficiente para operar: {balance:.2f} {QUOTE_CURRENCY} "
+                f"(mínimo recomendado: 10 {QUOTE_CURRENCY})."
             )
             return False
 
@@ -512,7 +530,7 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
         quantity = calculate_position_size(balance, entry_est, sl_price)
 
         # ── 4. Precisão do mercado ────────────────────────────────────────────
-        quantity = _apply_market_precision(exchange, quantity)
+        quantity = _apply_market_precision(exchange, symbol, quantity)
         logger.info(f"[ENTRADA] Quantidade ajustada (precisão): {quantity:.6f} BCH")
 
         # ── 5. Ordem de compra a mercado ──────────────────────────────────────
@@ -527,7 +545,7 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
         entry_real = entry_est
         qty_real   = quantity
         try:
-            filled = exchange.fetch_order(buy_order["id"], SYMBOL)
+            filled = exchange.fetch_order(buy_order["id"], symbol)
             avg    = filled.get("average") or filled.get("price")
             filled_qty = filled.get("filled")
 
@@ -563,7 +581,7 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
             "sl_order_id" : exit_info.get("sl_order_id"),
             "exit_mode"   : exit_info.get("exit_mode", "monitor"),
         }
-        save_state(state)
+        save_state(state, symbol)
 
         logger.info(
             f"[POSIÇÃO ABERTA] ✓ Entry={entry_real:.4f} | Qty={qty_real:.6f} BCH | "

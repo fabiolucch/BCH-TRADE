@@ -29,6 +29,7 @@ TESTNET = os.getenv("TESTNET", "True").strip().lower() in ("true", "1", "yes")
 # Par e timeframes
 # ─────────────────────────────────────────────────────────────
 SYMBOL           = os.getenv("SYMBOL", "BCH/USDC")
+SYMBOLS          = [s.strip().upper() for s in os.getenv("SYMBOLS", SYMBOL).split(",") if s.strip()]
 TIMEFRAME_TREND  = os.getenv("TIMEFRAME_TREND", "1d")  # Tendência principal
 TIMEFRAME_ENTRY  = os.getenv("TIMEFRAME_ENTRY", "4h")  # Gatilho de entrada
 
@@ -53,6 +54,9 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))    # segundos
 OHLCV_LIMIT    = int(os.getenv("OHLCV_LIMIT", "200"))       # candles históricos
 STATE_FILE     = os.getenv("STATE_FILE", "position_state.json")
 LOG_FILE       = os.getenv("LOG_FILE", "bot_trade.log")
+QUOTE_CURRENCY = os.getenv("QUOTE_CURRENCY", "USDT").strip().upper()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
 def create_exchange() -> ccxt.Exchange:
