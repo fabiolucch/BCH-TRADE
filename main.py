@@ -1,203 +1,99 @@
-"""
-main.py — Ponto de entrada do BCH/USDC Swing Trade Bot.
-
-Loop infinito que executa a cada CHECK_INTERVAL segundos (padrão: 15 min).
-
-Fluxo de cada ciclo:
-  1. Carrega o estado da posição (arquivo JSON)
-  2. Se houver posição aberta → monitora SL/TP
-  3. Se não houver posição    → analisa indicadores e verifica sinal de entrada
-  4. Registra tudo em log (terminal + arquivo)
-  5. Aguarda o próximo ciclo
-
-Interrompa com Ctrl+C para parar o bot com segurança.
-"""
-
 import logging
 import sys
 import time
 
-from config import (
-    CHECK_INTERVAL,
-    LOG_FILE,
-    SYMBOL,
-    TESTNET,
-    create_exchange,
-)
+from config import CHECK_INTERVAL, LOG_FILE, QUOTE_CURRENCY, SYMBOLS, TESTNET, create_exchange
 from indicators import calculate_indicators
-from execution import (
-    check_open_position,
-    get_usdc_balance,
-    load_state,
-    open_position,
-)
+from execution import check_open_position, get_quote_balance, load_state, open_position
+from notifier import send_telegram, telegram_enabled, telegram_status, test_telegram
 
-
-# ═════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO DE LOGGING
-# ═════════════════════════════════════════════════════════════
 
 def setup_logging(log_file: str) -> logging.Logger:
-    """
-    Configura dois handlers de log:
-    - Terminal (stdout): nível INFO — mensagens operacionais
-    - Arquivo (log_file): nível DEBUG — log completo para análise posterior
-    """
     logger = logging.getLogger("bot")
     logger.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)-8s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Handler de terminal
+    formatter = logging.Formatter(fmt="%(asctime)s [%(levelname)-8s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(formatter)
-
-    # Handler de arquivo (append mode — não sobrescreve entre reinicializações)
     file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
-
     logger.addHandler(console)
     logger.addHandler(file_handler)
-
     return logger
 
 
-# ═════════════════════════════════════════════════════════════
-# LOOP PRINCIPAL
-# ═════════════════════════════════════════════════════════════
-
 def run_bot() -> None:
     logger = setup_logging(LOG_FILE)
-
-    # ── Banner de inicialização ───────────────────────────────────────────────
     logger.info("═" * 62)
-    logger.info("  BCH/USDC Swing Trade Bot  —  Iniciando")
-    logger.info(f"  Par       : {SYMBOL}")
-    logger.info(f"  Modo      : {'TESTNET / Paper Trading' if TESTNET else '⚠  PRODUÇÃO (dinheiro real)'}")
-    logger.info(f"  Intervalo : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min por ciclo)")
-    logger.info(f"  Log       : {LOG_FILE}")
+    logger.info("  OKX Swing Trade Bot  —  Iniciando")
+    logger.info(f"  Pares     : {', '.join(SYMBOLS)}")
+    logger.info(f"  Modo      : {'TESTNET / Paper Trading' if TESTNET else '⚠  PRODUÇÃO'}")
+    logger.info(f"  Telegram  : {'ATIVO' if telegram_enabled() else 'DESATIVADO'} ({telegram_status()})")
     logger.info("═" * 62)
 
-    # ── Conexão com a exchange ────────────────────────────────────────────────
     try:
         exchange = create_exchange()
         exchange.load_markets()
-        logger.info(f"Exchange '{exchange.id}' conectada. Mercados carregados.")
+        server_time = exchange.fetch_time()
+        logger.info(f"Exchange '{exchange.id}' conectada. Mercados carregados. server_time={server_time}")
+        balance = get_quote_balance(exchange)
+        logger.info(f"Conexão autenticada com API privada OKX. Saldo {QUOTE_CURRENCY}={balance:.2f}")
+        if telegram_enabled():
+            started_msg = (
+                f"🤖 Bot iniciado em {'TESTNET' if TESTNET else 'PRODUÇÃO'} | "
+                f"Pares: {', '.join(SYMBOLS)}"
+            )
+            send_telegram(started_msg)
+            send_telegram(
+                f"✅ API OKX conectada com sucesso | "
+                f"Saldo {QUOTE_CURRENCY}: {balance:.2f}"
+            )
+            if test_telegram():
+                logger.info("Teste de Telegram enviado com sucesso.")
+            else:
+                logger.warning("Falha no teste de Telegram. Verifique token/chat_id e firewall de saída.")
+        else:
+            logger.warning("Telegram desativado por configuração: %s", telegram_status())
     except Exception as exc:
         logger.critical(f"Falha crítica ao conectar à exchange: {exc}")
+        send_telegram(f"❌ Falha na conexão com API OKX: {exc}")
         sys.exit(1)
 
     iteration = 0
-
     while True:
         iteration += 1
-        logger.info("─" * 62)
-        logger.info(f"[CICLO #{iteration:04d}]  {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
-
+        logger.info(f"[CICLO #{iteration:04d}] {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
         try:
-            # ── Carrega estado da posição ─────────────────────────────────────
-            state = load_state()
+            for symbol in SYMBOLS:
+                logger.info(f"[{symbol}] Iniciando análise...")
+                state = load_state(symbol)
+                if state.get("is_open"):
+                    still_open = check_open_position(exchange, symbol, state)
+                    if not still_open:
+                        send_telegram(f"✅ [{symbol}] posição encerrada.")
+                    continue
 
-            # ── RAMO A: Posição aberta → monitorar SL/TP ──────────────────────
-            if state.get("is_open"):
-                logger.info(
-                    f"[STATUS] Posição ABERTA | "
-                    f"Entry={state['entry_price']:.4f} | "
-                    f"Qty={state['quantity']:.6f} BCH | "
-                    f"SL={state['sl_price']:.4f} | "
-                    f"TP={state['tp_price']:.4f} | "
-                    f"Modo={state.get('exit_mode', 'monitor').upper()}"
-                )
-
-                still_open = check_open_position(exchange, state)
-
-                if not still_open:
-                    logger.info("[STATUS] ✓ Posição encerrada neste ciclo.")
-                else:
-                    logger.info("[STATUS] Posição mantida. Aguardando próximo ciclo.")
-
-            # ── RAMO B: Sem posição → verificar sinal de entrada ───────────────
-            else:
-                logger.info("[STATUS] Sem posição aberta. Analisando mercado...")
-
-                # Exibe saldo atual antes da análise
-                try:
-                    get_usdc_balance(exchange)
-                except Exception:
-                    pass  # erro já logado em get_usdc_balance
-
-                # Calcula indicadores e avalia condições
-                indicators = calculate_indicators(exchange)
-
+                indicators = calculate_indicators(exchange, symbol)
                 if indicators["signal"]:
-                    logger.info(
-                        "[SINAL] ★★★ SINAL DE COMPRA DETECTADO! ★★★  "
-                        "Tendência=OK | Pullback=OK | RSI=OK"
-                    )
-                    success = open_position(exchange, indicators)
-
+                    success = open_position(exchange, symbol, indicators)
                     if success:
-                        logger.info("[SINAL] Posição aberta com sucesso!")
-                    else:
-                        logger.warning("[SINAL] Sinal detectado, mas falha ao abrir posição.")
-
+                        send_telegram(f"🟢 [{symbol}] posição aberta.")
                 else:
-                    # Log detalhado dos motivos para não entrar
-                    reasons = []
-
-                    if not indicators["trend_ok"]:
-                        reasons.append(
-                            f"Tendência: Close_1D={indicators['close_1d']:.4f} "
-                            f"abaixo da EMA50_1D={indicators['ema50_1d']:.4f}"
-                        )
-
-                    if not indicators["pullback_ok"]:
-                        reasons.append(
-                            f"Pullback: Close_4H={indicators['close_4h']:.4f} fora da zona "
-                            f"[EMA50={indicators['ema50_4h']:.4f} ~ EMA20={indicators['ema20_4h']:.4f}]"
-                        )
-
-                    if not indicators["rsi_ok"]:
-                        oversold_str  = "Sim" if indicators["rsi_was_oversold"]  else "Não"
-                        recover_str   = "Sim" if indicators["rsi_recovering"]     else "Não"
-                        reasons.append(
-                            f"RSI: valor={indicators['rsi_current']:.2f} | "
-                            f"Sobrevenda recente={oversold_str} | "
-                            f"Recuperando={recover_str}"
-                        )
-
-                    logger.info("[SEM SINAL] Motivos:")
-                    for i, r in enumerate(reasons, 1):
-                        logger.info(f"  {i}. {r}")
+                    logger.info(f"[{symbol}] [SEM SINAL]")
 
         except KeyboardInterrupt:
-            logger.info("\n[BOT] Interrompido pelo usuário (Ctrl+C). Encerrando com segurança...")
+            logger.info("[BOT] Interrompido pelo usuário.")
             break
-
-        except (Exception,) as exc:
-            logger.error(
-                f"[CICLO #{iteration:04d}] Erro inesperado: {exc}",
-                exc_info=True,
-            )
-            logger.info("Aguardando 60 segundos antes de tentar novamente...")
+        except Exception as exc:
+            logger.error(f"[CICLO #{iteration:04d}] Erro inesperado: {exc}", exc_info=True)
+            send_telegram(f"⚠️ Erro no ciclo {iteration}: {exc}")
             time.sleep(60)
             continue
 
-        logger.info(
-            f"[CICLO #{iteration:04d}] Concluído. "
-            f"Próxima verificação em {CHECK_INTERVAL // 60} minutos."
-        )
+        logger.info(f"[CICLO #{iteration:04d}] Concluído. Próxima verificação em {CHECK_INTERVAL // 60} min.")
         time.sleep(CHECK_INTERVAL)
 
-
-# ═════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ═════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     run_bot()

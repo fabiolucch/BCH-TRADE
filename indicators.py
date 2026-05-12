@@ -19,7 +19,7 @@ import pandas as pd
 import pandas_ta as ta
 
 from config import (
-    SYMBOL,
+
     TIMEFRAME_TREND,
     TIMEFRAME_ENTRY,
     OHLCV_LIMIT,
@@ -81,7 +81,7 @@ def fetch_ohlcv(
 # Cálculo de indicadores e avaliação das condições
 # ─────────────────────────────────────────────────────────────
 
-def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
+def calculate_indicators(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]:
     """
     Calcula todos os indicadores e avalia as condições de entrada.
 
@@ -99,7 +99,7 @@ def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
     └─────────────────┴──────────────────────────────────────────────────────┘
     """
     # ── Gráfico 1D: Tendência principal ──────────────────────────────────────
-    df_1d = fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_TREND, OHLCV_LIMIT)
+    df_1d = fetch_ohlcv(exchange, symbol, TIMEFRAME_TREND, OHLCV_LIMIT)
 
     # pandas_ta: calcula EMA e adiciona coluna 'EMA_50' ao DataFrame
     df_1d.ta.ema(length=50, append=True)
@@ -111,7 +111,7 @@ def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
     trend_ok = close_1d > ema50_1d
 
     # ── Gráfico 4H: Gatilho de entrada ───────────────────────────────────────
-    df_4h = fetch_ohlcv(exchange, SYMBOL, TIMEFRAME_ENTRY, OHLCV_LIMIT)
+    df_4h = fetch_ohlcv(exchange, symbol, TIMEFRAME_ENTRY, OHLCV_LIMIT)
 
     df_4h.ta.ema(length=20, append=True)
     df_4h.ta.ema(length=50, append=True)
@@ -168,7 +168,7 @@ def calculate_indicators(exchange: ccxt.Exchange) -> Dict[str, Any]:
 
     # Log resumido sempre visível no terminal
     logger.info(
-        "[INDICADORES] "
+        f"[{symbol}] [INDICADORES] "
         f"1D → Close={close_1d:.4f} | EMA50={ema50_1d:.4f} | "
         f"Tendência={'✓' if trend_ok else '✗'} || "
         f"4H → Close={close_4h:.4f} | EMA20={ema20_4h:.4f} | "

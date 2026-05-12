@@ -13,10 +13,14 @@ ccxt>=4.3.0
 pandas>=2.0.0
 
 # Cálculo de indicadores técnicos (EMA, RSI, etc.)
-pandas_ta>=0.3.14b0
+# Em várias distros o pacote está publicado como "pandas-ta"
+pandas-ta>=0.3.14b0
 
 # Carregamento seguro de variáveis de ambiente do .env
 python-dotenv>=1.0.0
 
 # Utilitário para nova versão do pandas_ta (dependência implícita)
 numpy>=1.26.0
+
+# Envio de notificações Telegram via HTTP
+requests>=2.31.0
