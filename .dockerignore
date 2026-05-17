@@ -1,0 +1,25 @@
+# Credenciais — nunca incluir na imagem
+.env
+
+# Arquivos de runtime gerados pelo bot (persistidos pelo volume, não na imagem)
+state.json
+*.log
+*.csv
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Ambientes virtuais
+venv/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/

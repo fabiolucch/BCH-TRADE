@@ -74,7 +74,10 @@ async def main() -> None:
     )
 
     # ── Sinal de encerramento gracioso ────────────────────────────────────────
-    loop = asyncio.get_event_loop()
+    # get_running_loop() é obrigatório no Python 3.12+ dentro de coroutines.
+    # Docker envia SIGTERM para PID 1; o exec form no CMD garante que o Python
+    # seja PID 1 e receba o sinal diretamente.
+    loop = asyncio.get_running_loop()
 
     def _on_signal(sig: signal.Signals) -> None:
         logger.info(f"Sinal {sig.name} recebido. Encerrando…")

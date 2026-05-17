@@ -1,10 +1,15 @@
 # ── Credenciais — NUNCA commitar ──
 .env
 
-# ── Estado da posição e logs gerados em runtime ──
+# ── Arquivos de runtime gerados pelo bot ──
+state.json
 position_state.json
-bot_trade.log
 *.log
+*.csv
+
+# ── Docker ──
+# (Dockerfile e docker-compose.yml SÃO versionados)
+docker-compose.override.yml
 
 # ── Python ──
 __pycache__/

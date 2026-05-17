@@ -1,0 +1,18 @@
+services:
+  swing_bot:
+    build: .
+    container_name: okx_swing_bot
+    restart: unless-stopped
+
+    # Bind-mount: state.json, dca_bot.log e .env gravados diretamente no disco
+    # da VPS — sobrevivem a rebuilds e reboots.
+    volumes:
+      - .:/app
+
+    # Lê variáveis de ambiente do arquivo .env na raiz do projeto.
+    env_file:
+      - .env
+
+    # Tempo máximo que o Docker aguarda o graceful shutdown antes de SIGKILL.
+    # Deve ser maior que o CHECK_INTERVAL configurado no .env.
+    stop_grace_period: 30s
