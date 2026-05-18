@@ -119,7 +119,6 @@ class DCAEngine:
                 # Ativa trailing em vez de vender imediatamente
                 stop_px = price * (1 - cfg["trailing_stop_pct"] / 100)
                 self.state.update_trailing(pair, price, stop_px)
-                quote = pair.split("/")[1]
                 msg = (
                     f"🎯 *Trailing Stop ativado — {pair}*\n"
                     f"├ TP atingido em: `{price:.4f}`\n"
