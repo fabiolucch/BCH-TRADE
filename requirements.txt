@@ -6,7 +6,7 @@
 # Conexão com a OKX e outras exchanges
 ccxt>=4.3.0
 
-# Bot do Telegram (API assíncrona nativa)
+# Bot do Telegram com suporte a inline keyboards e callbacks
 python-telegram-bot>=20.0
 
 # Variáveis de ambiente

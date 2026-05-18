@@ -1,20 +1,23 @@
-"""telegram_handler.py — Comandos interativos e relatórios agendados via Telegram."""
+"""telegram_handler.py — Menu interativo, comandos e relatórios agendados."""
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-from config import (
-    DAILY_REPORT_TIME,
-    PAIRS,
-    TAKE_PROFIT_PCT,
-    TELEGRAM_CHAT_ID,
-    TELEGRAM_TOKEN,
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
+
+from bot_config import CONFIG_FIELDS, BotConfig
+from config import PAIRS, TAKE_PROFIT_PCT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN, DAILY_REPORT_TIME
+from strategies import PRESETS
 
 if TYPE_CHECKING:
     from dca import DCAEngine
@@ -23,43 +26,64 @@ if TYPE_CHECKING:
 logger = logging.getLogger("bot.telegram")
 
 
+# ── Helpers de teclado ────────────────────────────────────────────────────────
+
+def _btn(text: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text, callback_data=data)
+
+def _kb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(list(rows))
+
+
 class TelegramHandler:
-    def __init__(self, state: "StateManager") -> None:
-        self.state  = state
-        self.engine: "DCAEngine" = None  # injetado via set_engine após construção
-        self.app    = Application.builder().token(TELEGRAM_TOKEN).build()
+    def __init__(self, state: "StateManager", bot_config: BotConfig) -> None:
+        self.state      = state
+        self.bot_config = bot_config
+        self.engine: "DCAEngine" = None
+        self.app        = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        # Armazena qual campo o usuário está digitando: chat_id → (field, msg_id)
+        self._awaiting: dict[int, tuple[str, int]] = {}
+
         self._register_handlers()
 
     def set_engine(self, engine: "DCAEngine") -> None:
         self.engine = engine
 
-    # ── Registro de comandos ──────────────────────────────────────────────────
+    # ── Registro ─────────────────────────────────────────────────────────────
 
     def _register_handlers(self) -> None:
-        cmds = [
-            ("start",      self._cmd_start),
-            ("help",       self._cmd_help),
-            ("status",     self._cmd_status),
-            ("pnl",        self._cmd_pnl),
-            ("close",      self._cmd_close),
-            ("panic_sell", self._cmd_close),  # alias
-        ]
-        for name, handler in cmds:
-            self.app.add_handler(CommandHandler(name, self._only_owner(handler)))
+        guard = self._only_owner
+
+        self.app.add_handler(CommandHandler("start",  guard(self._cmd_menu)))
+        self.app.add_handler(CommandHandler("menu",   guard(self._cmd_menu)))
+        self.app.add_handler(CommandHandler("status", guard(self._cmd_status)))
+        self.app.add_handler(CommandHandler("pnl",    guard(self._cmd_pnl)))
+        self.app.add_handler(CommandHandler("close",  guard(self._cmd_close_text)))
+        self.app.add_handler(CommandHandler("panic_sell", guard(self._cmd_close_text)))
+
+        self.app.add_handler(CallbackQueryHandler(guard(self._on_callback)))
+        self.app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, guard(self._on_text_input))
+        )
 
     def _only_owner(self, fn):
-        """Decorator que rejeita mensagens de chats não autorizados."""
         async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            if str(update.effective_chat.id) != str(TELEGRAM_CHAT_ID):
-                await update.message.reply_text("⛔ Acesso não autorizado.")
+            chat_id = (
+                update.effective_chat.id
+                if update.effective_chat
+                else update.callback_query.message.chat_id
+            )
+            if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                if update.message:
+                    await update.message.reply_text("⛔ Acesso não autorizado.")
                 return
             await fn(update, ctx)
         return wrapper
 
-    # ── Envio de notificações ─────────────────────────────────────────────────
+    # ── Notificações proativas ────────────────────────────────────────────────
 
     async def send(self, text: str) -> None:
-        """Envia mensagem proativa ao chat configurado (notificações do bot)."""
         try:
             await self.app.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
@@ -69,94 +93,308 @@ class TelegramHandler:
         except Exception as exc:
             logger.error(f"Falha ao enviar mensagem Telegram: {exc}")
 
-    # ── Comandos ──────────────────────────────────────────────────────────────
+    # ── Menus (texto + teclado) ───────────────────────────────────────────────
 
-    async def _cmd_start(self, update: Update, _ctx) -> None:
-        await update.message.reply_text(
-            "🤖 *DCA Bot ativo!*\nUse /help para ver os comandos disponíveis.",
-            parse_mode=ParseMode.MARKDOWN,
+    def _build_main_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        cfg = self.bot_config.get()
+        strategy_label = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
+        active_pairs   = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
+
+        text = (
+            "🤖 *DCA Trading Bot*\n\n"
+            f"📌 Estratégia: *{strategy_label}*\n"
+            f"📊 Posições abertas: *{len(active_pairs)}* de *{len(PAIRS)}*\n"
+            f"🔁 Pares: `{', '.join(PAIRS)}`"
+        )
+        kb = _kb(
+            [_btn("📊 Status",           "nav:status"),
+             _btn("💰 PnL",             "nav:pnl")],
+            [_btn("⚙️ Configurações",   "nav:config")],
+            [_btn("🔴 Fechar Posição",  "nav:close_menu")],
+        )
+        return text, kb
+
+    def _build_config_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        cfg = self.bot_config.get()
+        trail_icon = "✅" if cfg["trailing_stop_enabled"] else "❌"
+        strategy_label = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
+        text = (
+            "⚙️ *Configurações*\n\n"
+            f"📌 Estratégia atual: *{strategy_label}*\n"
+            f"📉 Queda p/ DCA: `{cfg['dca_drop_pct']}%`\n"
+            f"💵 Valor por aporte: `{cfg['order_size_usdt']} USDT`\n"
+            f"🎯 Take Profit: `{cfg['take_profit_pct']}%`\n"
+            f"🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
+            f"{trail_icon} Trailing Stop: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
+            + (f" — `{cfg['trailing_stop_pct']}%`" if cfg["trailing_stop_enabled"] else "")
+        )
+        kb = _kb(
+            [_btn("📋 Estratégias Prontas",  "nav:strategies"),
+             _btn("🔧 Personalizar",         "nav:custom")],
+            [_btn(f"{trail_icon} Trailing Stop", "toggle:trailing")],
+            [_btn("◀️ Voltar",               "nav:main")],
+        )
+        return text, kb
+
+    def _build_strategies_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        text = "📋 *Estratégias Prontas*\n\nEscolha uma estratégia para aplicar:"
+        rows = []
+        for key, p in PRESETS.items():
+            rows.append([_btn(f"{p['emoji']} {p['name']}", f"preset:{key}")])
+        rows.append([_btn("◀️ Voltar", "nav:config")])
+        return text, _kb(*rows)
+
+    def _build_strategy_detail(self, key: str) -> tuple[str, InlineKeyboardMarkup]:
+        p   = PRESETS[key]
+        cfg = self.bot_config.get()
+        trail = "✅ Sim" if p["trailing_stop_enabled"] else "❌ Não"
+        text = (
+            f"{p['emoji']} *{p['name']}*\n\n"
+            f"_{p['description']}_\n\n"
+            f"📉 Queda p/ DCA: `{p['dca_drop_pct']}%`\n"
+            f"💵 Aporte: `{p['order_size_usdt']} USDT`\n"
+            f"🎯 Take Profit: `{p['take_profit_pct']}%`\n"
+            f"🔢 Máx. aportes: `{p['max_dca_orders']}`\n"
+            f"📈 Trailing Stop: {trail}"
+            + (f" (`{p['trailing_stop_pct']}%`)" if p["trailing_stop_enabled"] else "")
+        )
+        active = cfg["strategy"] == key
+        kb = _kb(
+            [_btn("✅ Aplicar esta estratégia" if not active else "✔️ Já aplicada", f"apply:{key}")],
+            [_btn("◀️ Voltar", "nav:strategies")],
+        )
+        return text, kb
+
+    def _build_custom_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        cfg = self.bot_config.get()
+        text = (
+            "🔧 *Configuração Personalizada*\n\n"
+            "Toque em um parâmetro para alterar:\n\n"
+            f"  📉 Queda p/ DCA: `{cfg['dca_drop_pct']}%`\n"
+            f"  💵 Valor por aporte: `{cfg['order_size_usdt']} USDT`\n"
+            f"  🎯 Take Profit: `{cfg['take_profit_pct']}%`\n"
+            f"  🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
+            f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`"
+        )
+        kb = _kb(
+            [_btn("📉 Queda DCA",      "set:dca_drop_pct"),
+             _btn("💵 Aporte",         "set:order_size_usdt")],
+            [_btn("🎯 Take Profit",    "set:take_profit_pct"),
+             _btn("🔢 Máx. aportes",  "set:max_dca_orders")],
+            [_btn("📈 Trailing %",     "set:trailing_stop_pct")],
+            [_btn("◀️ Voltar",         "nav:config")],
+        )
+        return text, kb
+
+    def _build_close_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        active = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
+        if not active:
+            text = "ℹ️ Nenhuma posição aberta no momento."
+            kb   = _kb([_btn("◀️ Voltar", "nav:main")])
+        else:
+            text = "🔴 *Fechar Posição a Mercado*\n\nQual par deseja encerrar?"
+            rows = [[_btn(f"🔴 {p}", f"close:{p.replace('/', '_')}")] for p in active]
+            rows.append([_btn("◀️ Voltar", "nav:main")])
+            kb   = _kb(*rows)
+        return text, kb
+
+    # ── Dispatcher de callbacks ───────────────────────────────────────────────
+
+    async def _on_callback(self, update: Update, _ctx) -> None:
+        query = update.callback_query
+        await query.answer()
+        data  = query.data
+
+        action, _, param = data.partition(":")
+
+        nav_map = {
+            "main"       : self._build_main_menu,
+            "config"     : self._build_config_menu,
+            "strategies" : self._build_strategies_menu,
+            "custom"     : self._build_custom_menu,
+            "close_menu" : self._build_close_menu,
+        }
+
+        if action == "nav":
+            if param == "status":
+                await self._send_status(query=query)
+                return
+            if param == "pnl":
+                text = self._build_pnl_report("PnL Atual")
+                await query.edit_message_text(
+                    text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=_kb([_btn("◀️ Voltar", "nav:main")]),
+                )
+                return
+            builder = nav_map.get(param)
+            if builder:
+                text, kb = builder()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "preset":
+            text, kb = self._build_strategy_detail(param)
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "apply":
+            self.bot_config.apply_preset(param)
+            p    = PRESETS[param]
+            text = f"✅ Estratégia *{p['emoji']} {p['name']}* aplicada com sucesso!"
+            kb   = _kb([_btn("◀️ Configurações", "nav:config")])
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "toggle":
+            if param == "trailing":
+                enabled = self.bot_config.toggle_trailing()
+                state_txt = "✅ ativado" if enabled else "❌ desativado"
+                await query.answer(f"Trailing Stop {state_txt}!", show_alert=True)
+                text, kb = self._build_config_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "set":
+            meta = CONFIG_FIELDS.get(param, {})
+            label = meta.get("label", param)
+            min_v = meta.get("min", 0)
+            max_v = meta.get("max", 999)
+            prompt = (
+                f"✏️ *{label}*\n\n"
+                f"Intervalo permitido: `{min_v}` a `{max_v}`\n"
+                f"Digite o novo valor:"
+            )
+            msg = await query.edit_message_text(prompt, parse_mode=ParseMode.MARKDOWN)
+            self._awaiting[query.message.chat_id] = (param, msg.message_id)
+
+        elif action == "close":
+            pair = param.replace("_", "/")
+            await query.edit_message_text(
+                f"⏳ Fechando *{pair}* a mercado…", parse_mode=ParseMode.MARKDOWN
+            )
+            result = await self.engine.force_close(pair)
+            await query.edit_message_text(
+                result,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb([_btn("◀️ Menu", "nav:main")]),
+            )
+
+    # ── Input de texto (configuração personalizada) ───────────────────────────
+
+    async def _on_text_input(self, update: Update, _ctx) -> None:
+        chat_id = update.effective_chat.id
+        pending = self._awaiting.pop(chat_id, None)
+        if not pending:
+            return
+
+        field, msg_id = pending
+        ok, feedback  = self.bot_config.set_field(field, update.message.text.strip())
+
+        await update.message.delete()
+
+        text, kb = (
+            (feedback + "\n\n" + self._build_custom_menu()[0], self._build_custom_menu()[1])
+            if ok
+            else (f"⚠️ {feedback}\n\nTente novamente:", _kb([_btn("◀️ Cancelar", "nav:custom")]))
         )
 
-    async def _cmd_help(self, update: Update, _ctx) -> None:
-        await update.message.reply_text(
-            "*Comandos disponíveis:*\n\n"
-            "/status — Posições abertas e PnL não realizado\n"
-            "/pnl — Relatório de PnL do dia e do mês\n"
-            "/close `PAR` — Fecha posição a mercado (ex: `/close BTC/USDT`)\n"
-            "/panic\\_sell `PAR` — Alias de /close",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await self.app.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
+        except Exception:
+            await update.message.reply_text(feedback, parse_mode=ParseMode.MARKDOWN)
+
+    # ── Comandos de texto ─────────────────────────────────────────────────────
+
+    async def _cmd_menu(self, update: Update, _ctx) -> None:
+        text, kb = self._build_main_menu()
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     async def _cmd_status(self, update: Update, _ctx) -> None:
+        await self._send_status(message=update.message)
+
+    async def _cmd_pnl(self, update: Update, _ctx) -> None:
+        await update.message.reply_text(
+            self._build_pnl_report("Relatório de PnL"), parse_mode=ParseMode.MARKDOWN
+        )
+
+    async def _cmd_close_text(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not ctx.args:
+            await update.message.reply_text("Uso: `/close BTC/USDT`", parse_mode=ParseMode.MARKDOWN)
+            return
+        pair = ctx.args[0].upper().replace("-", "/")
+        if pair not in PAIRS:
+            await update.message.reply_text(f"Par `{pair}` não monitorado.", parse_mode=ParseMode.MARKDOWN)
+            return
+        await update.message.reply_text(f"⏳ Fechando *{pair}*…", parse_mode=ParseMode.MARKDOWN)
+        result = await self.engine.force_close(pair)
+        await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+
+    # ── Status ────────────────────────────────────────────────────────────────
+
+    async def _send_status(self, message=None, query=None) -> None:
         lines = ["*📊 Status das Posições*\n"]
+        cfg   = self.bot_config.get()
+
         for pair in PAIRS:
             pos = self.state.get_position(pair)
             if not pos["is_active"]:
-                lines.append(f"• {pair}: _sem posição aberta_")
+                lines.append(f"• {pair}: _sem posição_")
                 continue
             try:
                 price    = await self.engine.exchange.get_price(pair)
                 pnl_u    = (price - pos["avg_price"]) * pos["total_qty"]
                 pnl_pct  = (price / pos["avg_price"] - 1) * 100
-                tp_price = pos["avg_price"] * (1 + TAKE_PROFIT_PCT / 100)
+                tp_price = pos["avg_price"] * (1 + cfg["take_profit_pct"] / 100)
                 emoji    = "🟢" if pnl_pct >= 0 else "🔴"
                 quote    = pair.split("/")[1]
+
+                trail_line = ""
+                if pos["trailing_active"]:
+                    trail_line = f"\n  🎯 Trail ativo: stop=`{pos['trailing_stop_price']:.4f}` | pico=`{pos['peak_price']:.4f}`"
+
                 lines.append(
                     f"{emoji} *{pair}*\n"
                     f"  Aportes: {pos['order_count']} | Qty: `{pos['total_qty']:.6f}`\n"
                     f"  Avg: `{pos['avg_price']:.4f}` | Atual: `{price:.4f}`\n"
                     f"  PnL: `{pnl_u:+.2f} {quote} ({pnl_pct:+.2f}%)`\n"
                     f"  Alvo TP: `{tp_price:.4f}`"
+                    f"{trail_line}"
                 )
             except Exception as exc:
-                lines.append(f"• {pair}: ⚠️ erro ao buscar preço ({exc})")
+                lines.append(f"• {pair}: ⚠️ {exc}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        text = "\n".join(lines)
+        kb   = _kb([_btn("🔄 Atualizar", "nav:status"), _btn("◀️ Menu", "nav:main")])
 
-    async def _cmd_pnl(self, update: Update, _ctx) -> None:
-        await update.message.reply_text(
-            self._build_pnl_report("Relatório de PnL"),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        if query:
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        elif message:
+            await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-    async def _cmd_close(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not ctx.args:
-            await update.message.reply_text("Uso: `/close BTC/USDT`", parse_mode=ParseMode.MARKDOWN)
-            return
-        pair = ctx.args[0].upper().replace("-", "/")
-        if pair not in PAIRS:
-            await update.message.reply_text(
-                f"Par `{pair}` não está na lista monitorada.\n"
-                f"Pares ativos: {', '.join(PAIRS)}",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-        await update.message.reply_text(f"⏳ Fechando posição {pair}…")
-        result = await self.engine.force_close(pair)
-        await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
-
-    # ── Relatórios ────────────────────────────────────────────────────────────
+    # ── Relatório PnL ─────────────────────────────────────────────────────────
 
     def _build_pnl_report(self, title: str) -> str:
         now     = datetime.now(timezone.utc)
         history = self.state.get_trade_history()
 
-        today_trades = [t for t in history if t["closed_at"][:10] == now.strftime("%Y-%m-%d")]
-        month_trades = [t for t in history if t["closed_at"][:7]  == now.strftime("%Y-%m")]
+        today_t = [t for t in history if t["closed_at"][:10] == now.strftime("%Y-%m-%d")]
+        month_t = [t for t in history if t["closed_at"][:7]  == now.strftime("%Y-%m")]
 
         def summarize(trades: list, label: str) -> str:
             if not trades:
                 return f"*{label}:* Nenhuma operação finalizada."
             total = sum(t["pnl_usdt"] for t in trades)
             emoji = "🟢" if total >= 0 else "🔴"
-            lines = [f"*{label}:* {emoji} PnL total: `{total:+.2f}` ({len(trades)} ops)"]
+            lines = [f"*{label}:* {emoji} `{total:+.2f}` USDT ({len(trades)} ops)"]
             for t in trades:
                 e = "🟢" if t["pnl_usdt"] >= 0 else "🔴"
-                lines.append(
-                    f"  {e} {t['pair']}: `{t['pnl_usdt']:+.2f}` ({t['pnl_pct']:+.2f}%)"
-                )
+                lines.append(f"  {e} {t['pair']}: `{t['pnl_usdt']:+.2f}` ({t['pnl_pct']:+.2f}%)")
             return "\n".join(lines)
 
+        cfg  = self.bot_config.get()
         open_lines = []
         for pair in PAIRS:
             pos = self.state.get_position(pair)
@@ -164,26 +402,24 @@ class TelegramHandler:
                 quote = pair.split("/")[1]
                 open_lines.append(
                     f"  • {pair}: {pos['order_count']} aportes | "
-                    f"`{pos['total_cost']:.2f} {quote}` investidos | "
-                    f"avg `{pos['avg_price']:.4f}`"
+                    f"`{pos['total_cost']:.2f} {quote}` | avg `{pos['avg_price']:.4f}`"
                 )
 
         parts = [
             f"*📈 {title}*",
             f"_{now.strftime('%d/%m/%Y %H:%M')} UTC_\n",
-            summarize(today_trades, "Hoje"),
+            summarize(today_t, "Hoje"),
             "",
-            summarize(month_trades, "Este mês"),
+            summarize(month_t, "Este mês"),
             "",
             "*Posições abertas:*",
         ]
-        parts += open_lines if open_lines else ["  Nenhuma posição aberta."]
+        parts += open_lines or ["  Nenhuma posição aberta."]
         return "\n".join(parts)
 
     # ── Schedulers ────────────────────────────────────────────────────────────
 
     async def schedule_daily_report(self) -> None:
-        """Envia relatório diário no horário DAILY_REPORT_TIME (UTC)."""
         h, m = map(int, DAILY_REPORT_TIME.split(":"))
         while True:
             now    = datetime.now(timezone.utc)
@@ -194,7 +430,6 @@ class TelegramHandler:
             await self.send(self._build_pnl_report("Relatório Diário"))
 
     async def schedule_monthly_report(self) -> None:
-        """Envia relatório mensal no 1º dia do mês à meia-noite UTC."""
         while True:
             now = datetime.now(timezone.utc)
             if now.month == 12:

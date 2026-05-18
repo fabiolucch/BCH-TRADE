@@ -4,6 +4,7 @@ import logging
 import signal
 import sys
 
+from bot_config import BotConfig
 from config import CHECK_INTERVAL, LOG_FILE, PAIRS, TESTNET
 from dca import DCAEngine
 from exchange import ExchangeClient
@@ -59,9 +60,10 @@ async def main() -> None:
         logger.critical(f"Falha ao conectar à exchange: {exc}")
         sys.exit(1)
 
-    state    = StateManager()
-    telegram = TelegramHandler(state)
-    engine   = DCAEngine(exchange, state, notify=telegram.send)
+    state      = StateManager()
+    bot_config = BotConfig()
+    telegram   = TelegramHandler(state, bot_config)
+    engine     = DCAEngine(exchange, state, bot_config, notify=telegram.send)
     telegram.set_engine(engine)
 
     # ── Inicia Telegram antes do loop ─────────────────────────────────────────

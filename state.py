@@ -10,14 +10,18 @@ from config import STATE_FILE
 logger = logging.getLogger("bot.state")
 
 _EMPTY_POSITION: dict[str, Any] = {
-    "is_active"     : False,
-    "orders"        : [],      # lista de {price, qty, cost, ts}
-    "avg_price"     : 0.0,
-    "total_qty"     : 0.0,
-    "total_cost"    : 0.0,    # total investido em quote currency
-    "last_buy_price": 0.0,
-    "order_count"   : 0,
-    "first_buy_at"  : None,
+    "is_active"           : False,
+    "orders"              : [],      # lista de {price, qty, cost, ts}
+    "avg_price"           : 0.0,
+    "total_qty"           : 0.0,
+    "total_cost"          : 0.0,     # total investido em quote currency
+    "last_buy_price"      : 0.0,
+    "order_count"         : 0,
+    "first_buy_at"        : None,
+    # Trailing Stop
+    "trailing_active"     : False,
+    "peak_price"          : 0.0,     # maior preço visto desde ativação do trailing
+    "trailing_stop_price" : 0.0,     # preço de venda = peak * (1 - trailing_pct/100)
 }
 
 _EMPTY_STATE: dict[str, Any] = {
@@ -37,6 +41,10 @@ class StateManager:
             try:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                # Garante campos novos em posições existentes (migração)
+                for pair, pos in data.get("positions", {}).items():
+                    for k, v in _EMPTY_POSITION.items():
+                        pos.setdefault(k, v)
                 logger.info(f"Estado carregado de '{STATE_FILE}'.")
                 return data
             except (json.JSONDecodeError, OSError) as exc:
@@ -77,6 +85,20 @@ class StateManager:
 
         self._set_position(pair, pos)
         return pos
+
+    def update_trailing(
+        self,
+        pair: str,
+        peak_price: float,
+        trailing_stop_price: float,
+        active: bool = True,
+    ) -> None:
+        """Atualiza os campos de trailing stop de uma posição aberta."""
+        pos = self.get_position(pair)
+        pos["trailing_active"]     = active
+        pos["peak_price"]          = peak_price
+        pos["trailing_stop_price"] = trailing_stop_price
+        self._set_position(pair, pos)
 
     def close_position(self, pair: str, exit_price: float) -> dict:
         """Encerra posição, calcula PnL e registra no histórico. Retorna o trade."""

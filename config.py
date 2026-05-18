@@ -24,6 +24,10 @@ ORDER_SIZE_USDT = float(os.getenv("ORDER_SIZE_USDT", "20.0")) # valor em quote p
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "1.5"))  # % acima do preço médio para vender
 MAX_DCA_ORDERS  = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de aportes por par
 
+# ── Trailing Stop (padrão inicial; ajustável via Telegram) ───────────────────
+TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+TRAILING_STOP_PCT     = float(os.getenv("TRAILING_STOP_PCT", "1.0"))  # % abaixo do pico para vender
+
 # ── Operacional ───────────────────────────────────────────────────────────────
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))        # segundos entre ciclos
 STATE_FILE     = Path(os.getenv("STATE_FILE", "state.json"))
