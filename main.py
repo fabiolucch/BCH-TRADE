@@ -96,8 +96,9 @@ async def main() -> None:
             telegram.schedule_daily_report(),
             telegram.schedule_monthly_report(),
         )
-    except asyncio.CancelledError:
-        pass
+    except (asyncio.CancelledError, Exception) as exc:
+        if not isinstance(exc, asyncio.CancelledError):
+            logger.critical(f"Erro fatal no loop principal: {exc}", exc_info=True)
     finally:
         logger.info("Encerrando bot…")
         try:

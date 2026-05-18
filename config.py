@@ -37,3 +37,6 @@ LOG_FILE       = Path(os.getenv("LOG_FILE", "dca_bot.log"))
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DAILY_REPORT_TIME = os.getenv("DAILY_REPORT_TIME", "00:00")    # HH:MM UTC
+# Garante formato válido mesmo se .env tiver valor vazio ou comentário inline
+if ":" not in DAILY_REPORT_TIME:
+    DAILY_REPORT_TIME = "00:00"

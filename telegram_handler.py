@@ -420,7 +420,11 @@ class TelegramHandler:
     # ── Schedulers ────────────────────────────────────────────────────────────
 
     async def schedule_daily_report(self) -> None:
-        h, m = map(int, DAILY_REPORT_TIME.split(":"))
+        try:
+            h, m = map(int, DAILY_REPORT_TIME.split(":"))
+        except (ValueError, AttributeError):
+            logger.warning(f"DAILY_REPORT_TIME inválido ('{DAILY_REPORT_TIME}'). Usando 00:00.")
+            h, m = 0, 0
         while True:
             now    = datetime.now(timezone.utc)
             target = now.replace(hour=h, minute=m, second=0, microsecond=0)
