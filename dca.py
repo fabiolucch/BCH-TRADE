@@ -144,25 +144,26 @@ class DCAEngine:
     # ── Execução de ordens ────────────────────────────────────────────────────
 
     async def _buy(self, pair: str, price: float, order_num: int) -> None:
-        cfg   = self.bot_config.get()
-        quote = pair.split("/")[1]
-        balance = await self.exchange.get_balance(quote)
+        cfg       = self.bot_config.get()
+        quote     = pair.split("/")[1]
+        size_usdt = _order_size(cfg, order_num)
+        balance   = await self.exchange.get_balance(quote)
 
-        if balance < cfg["order_size_usdt"]:
+        if balance < size_usdt:
             logger.warning(
                 f"[{pair}] Saldo insuficiente: {balance:.2f} {quote} < "
-                f"{cfg['order_size_usdt']:.2f} {quote}"
+                f"{size_usdt:.2f} {quote}"
             )
             # _check_capital() já enviou alerta por quote currency — não duplicar
             if not self._low_balance_alerts.get(quote, False):
                 await self.notify(
                     f"⚠️ Saldo insuficiente para DCA #{order_num} em *{pair}*\n"
                     f"├ Disponível: `{balance:.2f} {quote}`\n"
-                    f"└ Necessário: `{cfg['order_size_usdt']:.2f} {quote}`"
+                    f"└ Necessário: `{size_usdt:.2f} {quote}`"
                 )
             return
 
-        qty = self.exchange.amount_to_precision(pair, cfg["order_size_usdt"] / price)
+        qty = self.exchange.amount_to_precision(pair, size_usdt / price)
 
         min_cost = self.exchange.get_min_order_cost(pair)
         if min_cost and (qty * price) < min_cost:
@@ -177,13 +178,20 @@ class DCAEngine:
             await self.notify(f"❌ Falha ao executar compra DCA #{order_num} em *{pair}*")
             return
 
-        filled  = float(order.get("filled") or qty)
-        avg_px  = float(order.get("average") or order.get("price") or price)
-        cost    = float(order.get("cost") or filled * avg_px)
+        filled   = float(order.get("filled") or qty)
+        avg_px   = float(order.get("average") or order.get("price") or price)
+        cost     = float(order.get("cost") or filled * avg_px)
         fee_usdt = _extract_fee(order, quote, avg_px, fallback=cost * FEE_RATE)
 
         pos      = self.state.record_buy(pair, avg_px, filled, cost, fee_usdt=fee_usdt)
         tp_price = pos["avg_price"] * (1 + cfg["take_profit_pct"] / 100)
+
+        levels = int(cfg.get("martingale_levels", 0))
+        mart_line = (
+            f"├ Martingale: `×{min(order_num, max(levels, 1))}` "
+            f"(`{size_usdt:.0f} {quote}`)\n"
+            if levels > 0 else ""
+        )
         trail_info = (
             f"├ Trailing: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
             + (f" (-{cfg['trailing_stop_pct']}%)" if cfg["trailing_stop_enabled"] else "")
@@ -195,6 +203,7 @@ class DCAEngine:
             f"├ Preço execução: `{avg_px:.4f}`\n"
             f"├ Quantidade: `{filled:.6f}`\n"
             f"├ Custo: `{cost:.2f} {quote}`\n"
+            f"{mart_line}"
             f"├ Taxa: `{fee_usdt:.4f} {quote}`\n"
             f"├ Preço médio: `{pos['avg_price']:.4f}`\n"
             f"├ Total investido: `{pos['total_cost']:.2f} {quote}`\n"
@@ -247,6 +256,20 @@ class DCAEngine:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _order_size(cfg: dict, order_num: int) -> float:
+    """Retorna o valor em quote do aporte N com martingale linear.
+
+    Fórmula: initial * min(order_num, max(levels, 1))
+
+    Exemplos:
+      initial=5,  levels=3: [5, 10, 15, 15, 15, ...]   (×1, ×2, ×3, ×3, ...)
+      initial=10, levels=2: [10, 20, 20, 20, ...]       (×1, ×2, ×2, ...)
+      initial=20, levels=0: [20, 20, 20, 20, ...]       (sem martingale)
+    """
+    levels = int(cfg.get("martingale_levels", 0))
+    return cfg["order_size_usdt"] * min(order_num, max(levels, 1))
+
 
 def _extract_fee(order: dict, quote: str, ref_price: float, fallback: float) -> float:
     """Extrai taxa em quote currency do retorno da ordem.

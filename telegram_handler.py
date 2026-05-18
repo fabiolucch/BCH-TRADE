@@ -118,13 +118,20 @@ class TelegramHandler:
         cfg = self.bot_config.get()
         trail_icon = "✅" if cfg["trailing_stop_enabled"] else "❌"
         strategy_label = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
+        levels = int(cfg.get("martingale_levels", 0))
+        mart_line = (
+            f"🎲 Martingale: `{levels} {'nível' if levels == 1 else 'níveis'}`\n"
+            if levels > 0 else
+            "🎲 Martingale: `OFF`\n"
+        )
         text = (
             "⚙️ *Configurações*\n\n"
             f"📌 Estratégia atual: *{strategy_label}*\n"
             f"📉 Queda p/ DCA: `{cfg['dca_drop_pct']}%`\n"
-            f"💵 Valor por aporte: `{cfg['order_size_usdt']} USDT`\n"
+            f"💵 Aporte inicial: `{cfg['order_size_usdt']} USDT`\n"
             f"🎯 Take Profit: `{cfg['take_profit_pct']}%`\n"
             f"🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
+            f"{mart_line}"
             f"{trail_icon} Trailing Stop: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
             + (f" — `{cfg['trailing_stop_pct']}%`" if cfg["trailing_stop_enabled"] else "")
         )
@@ -145,16 +152,24 @@ class TelegramHandler:
         return text, _kb(*rows)
 
     def _build_strategy_detail(self, key: str) -> tuple[str, InlineKeyboardMarkup]:
-        p   = PRESETS[key]
-        cfg = self.bot_config.get()
-        trail = "✅ Sim" if p["trailing_stop_enabled"] else "❌ Não"
+        p      = PRESETS[key]
+        cfg    = self.bot_config.get()
+        trail  = "✅ Sim" if p["trailing_stop_enabled"] else "❌ Não"
+        levels = int(p.get("martingale_levels", 0))
+        if levels > 0:
+            sizes = [p["order_size_usdt"] * min(n, levels) for n in range(1, levels + 2)]
+            sizes_str = " → ".join(f"{s:.0f}" for s in sizes[:-1]) + f" → {sizes[-1]:.0f}…"
+            mart_line = f"🎲 Martingale: `{levels} níveis` ({sizes_str} USDT)\n"
+        else:
+            mart_line = "🎲 Martingale: `OFF`\n"
         text = (
             f"{p['emoji']} *{p['name']}*\n\n"
             f"_{p['description']}_\n\n"
             f"📉 Queda p/ DCA: `{p['dca_drop_pct']}%`\n"
-            f"💵 Aporte: `{p['order_size_usdt']} USDT`\n"
+            f"💵 Aporte inicial: `{p['order_size_usdt']} USDT`\n"
             f"🎯 Take Profit: `{p['take_profit_pct']}%`\n"
             f"🔢 Máx. aportes: `{p['max_dca_orders']}`\n"
+            f"{mart_line}"
             f"📈 Trailing Stop: {trail}"
             + (f" (`{p['trailing_stop_pct']}%`)" if p["trailing_stop_enabled"] else "")
         )
@@ -166,22 +181,33 @@ class TelegramHandler:
         return text, kb
 
     def _build_custom_menu(self) -> tuple[str, InlineKeyboardMarkup]:
-        cfg = self.bot_config.get()
+        cfg    = self.bot_config.get()
+        levels = int(cfg.get("martingale_levels", 0))
+        if levels > 0:
+            sizes = " → ".join(
+                str(int(cfg["order_size_usdt"] * min(n, levels)))
+                for n in range(1, levels + 2)
+            ) + "…"
+            mart_val = f"`{levels} níveis` ({sizes} USDT)"
+        else:
+            mart_val = "`OFF`"
         text = (
             "🔧 *Configuração Personalizada*\n\n"
             "Toque em um parâmetro para alterar:\n\n"
             f"  📉 Queda p/ DCA: `{cfg['dca_drop_pct']}%`\n"
-            f"  💵 Valor por aporte: `{cfg['order_size_usdt']} USDT`\n"
+            f"  💵 Aporte inicial: `{cfg['order_size_usdt']} USDT`\n"
             f"  🎯 Take Profit: `{cfg['take_profit_pct']}%`\n"
             f"  🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
+            f"  🎲 Martingale: {mart_val}\n"
             f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`"
         )
         kb = _kb(
             [_btn("📉 Queda DCA",      "set:dca_drop_pct"),
-             _btn("💵 Aporte",         "set:order_size_usdt")],
+             _btn("💵 Aporte inicial", "set:order_size_usdt")],
             [_btn("🎯 Take Profit",    "set:take_profit_pct"),
              _btn("🔢 Máx. aportes",  "set:max_dca_orders")],
-            [_btn("📈 Trailing %",     "set:trailing_stop_pct")],
+            [_btn("🎲 Martingale",     "set:martingale_levels"),
+             _btn("📈 Trailing %",     "set:trailing_stop_pct")],
             [_btn("◀️ Voltar",         "nav:config")],
         )
         return text, kb

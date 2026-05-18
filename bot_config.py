@@ -10,6 +10,7 @@ from pathlib import Path
 
 from config import (
     DCA_DROP_PCT,
+    MARTINGALE_LEVELS,
     MAX_DCA_ORDERS,
     ORDER_SIZE_USDT,
     TAKE_PROFIT_PCT,
@@ -29,15 +30,17 @@ _DEFAULTS: dict = {
     "max_dca_orders"        : MAX_DCA_ORDERS,
     "trailing_stop_enabled" : TRAILING_STOP_ENABLED,
     "trailing_stop_pct"     : TRAILING_STOP_PCT,
+    "martingale_levels"     : MARTINGALE_LEVELS,
 }
 
 # Metadados dos campos configuráveis pelo usuário
 CONFIG_FIELDS: dict[str, dict] = {
-    "dca_drop_pct"     : {"label": "Queda para DCA (%)",       "type": float, "min": 0.1,  "max": 50.0},
-    "order_size_usdt"  : {"label": "Valor por aporte (USDT)",  "type": float, "min": 1.0,  "max": 100_000.0},
-    "take_profit_pct"  : {"label": "Take Profit (%)",          "type": float, "min": 0.1,  "max": 100.0},
-    "max_dca_orders"   : {"label": "Máximo de aportes",        "type": int,   "min": 1,    "max": 100},
-    "trailing_stop_pct": {"label": "Trailing Stop (%)",        "type": float, "min": 0.1,  "max": 20.0},
+    "dca_drop_pct"      : {"label": "Queda para DCA (%)",        "type": float, "min": 0.1, "max": 50.0},
+    "order_size_usdt"   : {"label": "Valor inicial do aporte (USDT)", "type": float, "min": 1.0, "max": 100_000.0},
+    "take_profit_pct"   : {"label": "Take Profit (%)",           "type": float, "min": 0.1, "max": 100.0},
+    "max_dca_orders"    : {"label": "Máximo de aportes",         "type": int,   "min": 1,   "max": 100},
+    "trailing_stop_pct" : {"label": "Trailing Stop (%)",         "type": float, "min": 0.1, "max": 20.0},
+    "martingale_levels" : {"label": "Níveis de Martingale (0-3)", "type": int,   "min": 0,   "max": 3},
 }
 
 
@@ -81,6 +84,7 @@ class BotConfig:
             "max_dca_orders"        : p["max_dca_orders"],
             "trailing_stop_enabled" : p["trailing_stop_enabled"],
             "trailing_stop_pct"     : p["trailing_stop_pct"],
+            "martingale_levels"     : p["martingale_levels"],
         })
         self._save()
         logger.info(f"Estratégia aplicada: {key}")
@@ -94,7 +98,7 @@ class BotConfig:
         try:
             value = meta["type"](raw_value.replace(",", "."))
         except ValueError:
-            return False, f"Valor inválido. Digite um número (ex: `3.5`)."
+            return False, "Valor inválido. Digite um número (ex: `3.5`)."
 
         if not (meta["min"] <= value <= meta["max"]):
             return False, (

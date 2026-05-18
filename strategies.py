@@ -12,13 +12,8 @@ class StrategyParams(TypedDict):
     max_dca_orders: int
     trailing_stop_enabled: bool
     trailing_stop_pct: float
+    martingale_levels: int
 
-
-# Cada estratégia foi calibrada levando em conta:
-# - Volatilidade típica do ativo (BTC ~3-5%/dia, alts ~5-10%/dia)
-# - Relação entre frequência de aportes e capital disponível
-# - Custo de fee OKX spot (0.1% maker/taker)
-# - Eficiência do trailing para capturar movimentos prolongados
 
 PRESETS: dict[str, StrategyParams] = {
     "conservador": {
@@ -34,6 +29,7 @@ PRESETS: dict[str, StrategyParams] = {
         "max_dca_orders"       : 5,
         "trailing_stop_enabled": False,
         "trailing_stop_pct"    : 1.0,
+        "martingale_levels"    : 0,
     },
     "moderado": {
         "name"                 : "Moderado",
@@ -48,6 +44,7 @@ PRESETS: dict[str, StrategyParams] = {
         "max_dca_orders"       : 8,
         "trailing_stop_enabled": True,
         "trailing_stop_pct"    : 0.8,
+        "martingale_levels"    : 0,
     },
     "agressivo": {
         "name"                 : "Agressivo",
@@ -62,6 +59,7 @@ PRESETS: dict[str, StrategyParams] = {
         "max_dca_orders"       : 15,
         "trailing_stop_enabled": True,
         "trailing_stop_pct"    : 0.5,
+        "martingale_levels"    : 0,
     },
     "hodl": {
         "name"                 : "HODL DCA",
@@ -76,6 +74,7 @@ PRESETS: dict[str, StrategyParams] = {
         "max_dca_orders"       : 5,
         "trailing_stop_enabled": True,
         "trailing_stop_pct"    : 2.0,
+        "martingale_levels"    : 0,
     },
     "scalper": {
         "name"                 : "Scalper DCA",
@@ -90,5 +89,21 @@ PRESETS: dict[str, StrategyParams] = {
         "max_dca_orders"       : 20,
         "trailing_stop_enabled": False,
         "trailing_stop_pct"    : 0.3,
+        "martingale_levels"    : 0,
+    },
+    "martingale": {
+        "name"                 : "DCA Martingale",
+        "emoji"                : "🎲",
+        "description"          : (
+            "Queda de 2%, TP 2.5% com trailing 0.4%. Aportes crescem linearmente:\n"
+            "20 → 40 → 60 → 60 USDT. Recupera posição mais rápido após quedas."
+        ),
+        "dca_drop_pct"         : 2.0,
+        "order_size_usdt"      : 20.0,
+        "take_profit_pct"      : 2.5,
+        "max_dca_orders"       : 8,
+        "trailing_stop_enabled": True,
+        "trailing_stop_pct"    : 0.4,
+        "martingale_levels"    : 3,
     },
 }
