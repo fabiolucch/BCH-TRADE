@@ -1,9 +1,9 @@
-"""dca.py — Motor de lógica DCA com Trailing Stop."""
+"""dca.py — Motor de lógica DCA com Trailing Stop e gestão de capital."""
 import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from config import PAIRS
+from config import FEE_RATE, PAIRS
 from exchange import ExchangeClient
 from state import StateManager
 
@@ -26,17 +26,53 @@ class DCAEngine:
         self.notify     = notify
         # Lock por par: evita condição de corrida entre loop DCA e comandos Telegram
         self._locks: dict[str, asyncio.Lock] = {pair: asyncio.Lock() for pair in PAIRS}
+        # Rastreia se já foi emitido alerta de saldo baixo por moeda de quote
+        self._low_balance_alerts: dict[str, bool] = {}
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
     async def tick(self) -> None:
         """Processa todos os pares em sequência em cada ciclo."""
+        await self._check_capital()
         for pair in PAIRS:
             try:
                 await self._check_pair(pair)
             except Exception as exc:
                 msg = f"❌ Erro inesperado em {pair}: {exc}"
                 logger.error(msg, exc_info=True)
+                await self.notify(msg)
+
+    # ── Gestão de capital ─────────────────────────────────────────────────────
+
+    async def _check_capital(self) -> None:
+        """Verifica saldo de cada quote currency e emite alertas no Telegram."""
+        cfg    = self.bot_config.get()
+        quotes = set(pair.split("/")[1] for pair in PAIRS)
+        for quote in quotes:
+            try:
+                balance = await self.exchange.get_balance(quote)
+            except Exception:
+                continue
+            was_low = self._low_balance_alerts.get(quote, False)
+            is_low  = balance < cfg["order_size_usdt"]
+            if is_low and not was_low:
+                self._low_balance_alerts[quote] = True
+                msg = (
+                    f"⚠️ *Saldo insuficiente — {quote}*\n"
+                    f"├ Disponível: `{balance:.2f} {quote}`\n"
+                    f"├ Necessário por aporte: `{cfg['order_size_usdt']:.2f} {quote}`\n"
+                    f"└ Novas entradas DCA em {quote} estão bloqueadas."
+                )
+                logger.warning(msg.replace("*", "").replace("`", ""))
+                await self.notify(msg)
+            elif not is_low and was_low:
+                self._low_balance_alerts[quote] = False
+                msg = (
+                    f"✅ *Saldo recuperado — {quote}*\n"
+                    f"├ Disponível: `{balance:.2f} {quote}`\n"
+                    f"└ DCA retomado para pares {quote}."
+                )
+                logger.info(msg.replace("*", "").replace("`", ""))
                 await self.notify(msg)
 
     # ── Avaliação por par ─────────────────────────────────────────────────────
@@ -141,8 +177,9 @@ class DCAEngine:
         filled  = float(order.get("filled") or qty)
         avg_px  = float(order.get("average") or order.get("price") or price)
         cost    = float(order.get("cost") or filled * avg_px)
+        fee_usdt = _extract_fee(order, quote, avg_px, fallback=cost * FEE_RATE)
 
-        pos     = self.state.record_buy(pair, avg_px, filled, cost)
+        pos      = self.state.record_buy(pair, avg_px, filled, cost, fee_usdt=fee_usdt)
         tp_price = pos["avg_price"] * (1 + cfg["take_profit_pct"] / 100)
         trail_info = (
             f"├ Trailing: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
@@ -155,6 +192,7 @@ class DCAEngine:
             f"├ Preço execução: `{avg_px:.4f}`\n"
             f"├ Quantidade: `{filled:.6f}`\n"
             f"├ Custo: `{cost:.2f} {quote}`\n"
+            f"├ Taxa: `{fee_usdt:.4f} {quote}`\n"
             f"├ Preço médio: `{pos['avg_price']:.4f}`\n"
             f"├ Total investido: `{pos['total_cost']:.2f} {quote}`\n"
             f"{trail_info}"
@@ -171,10 +209,12 @@ class DCAEngine:
             await self.notify(f"❌ Falha ao executar venda ({reason}) em *{pair}*")
             return
 
-        exit_px = float(order.get("average") or order.get("price") or price)
-        trade   = self.state.close_position(pair, exit_px)
+        exit_px      = float(order.get("average") or order.get("price") or price)
+        gross_rev    = exit_px * pos["total_qty"]
+        sell_fee     = _extract_fee(order, quote, exit_px, fallback=gross_rev * FEE_RATE)
+        trade        = self.state.close_position(pair, exit_px, sell_fee_usdt=sell_fee)
 
-        emoji = "🟢" if trade["pnl_usdt"] >= 0 else "🔴"
+        emoji = "🟢" if trade["pnl_net"] >= 0 else "🔴"
         msg = (
             f"{emoji} *{reason} — {pair}*\n"
             f"├ Preço saída: `{exit_px:.4f}`\n"
@@ -182,8 +222,10 @@ class DCAEngine:
             f"├ Aportes realizados: `{trade['order_count']}`\n"
             f"├ Quantidade: `{trade['qty']:.6f}`\n"
             f"├ Investido: `{trade['cost']:.2f} {quote}`\n"
-            f"├ Receita: `{trade['revenue']:.2f} {quote}`\n"
-            f"└ PnL: `{trade['pnl_usdt']:+.2f} {quote} ({trade['pnl_pct']:+.2f}%)`"
+            f"├ Receita bruta: `{trade['gross_revenue']:.2f} {quote}`\n"
+            f"├ Taxas totais: `{trade['fees_usdt']:.4f} {quote}`\n"
+            f"├ PnL bruto: `{trade['pnl_gross']:+.2f} {quote}`\n"
+            f"└ PnL líquido: `{trade['pnl_usdt']:+.2f} {quote} ({trade['pnl_pct']:+.2f}%)`"
         )
         logger.info(msg.replace("*", "").replace("`", ""))
         await self.notify(msg)
@@ -199,3 +241,23 @@ class DCAEngine:
             price = await self.exchange.get_price(pair)
             await self._sell(pair, pos, price, reason="Fechamento Manual")
             return f"✅ Posição *{pair}* encerrada a mercado."
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_fee(order: dict, quote: str, ref_price: float, fallback: float) -> float:
+    """Extrai taxa em USDT do retorno da ordem, convertendo se necessário.
+
+    OKX retorna fee como dict {"cost": valor, "currency": moeda}.
+    Se a moeda da taxa for a base (ex: BTC), converte para quote usando ref_price.
+    Usa `fallback` se a ordem não retornar fee.
+    """
+    fee_info = order.get("fee") or {}
+    if not isinstance(fee_info, dict) or not fee_info.get("cost"):
+        return fallback
+    cost     = float(fee_info["cost"])
+    currency = fee_info.get("currency", quote)
+    if currency != quote:
+        # Fee em moeda base → converte para quote
+        return abs(cost) * ref_price
+    return abs(cost)

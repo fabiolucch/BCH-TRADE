@@ -28,6 +28,11 @@ MAX_DCA_ORDERS  = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de apor
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "False").strip().lower() in ("true", "1", "yes")
 TRAILING_STOP_PCT     = float(os.getenv("TRAILING_STOP_PCT", "1.0"))  # % abaixo do pico para vender
 
+# ── Taxa da corretora ─────────────────────────────────────────────────────────
+# OKX spot taker: 0.1% (0.001). Usado para PnL preciso quando a exchange
+# não retorna o campo fee na resposta da ordem.
+FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
+
 # ── Operacional ───────────────────────────────────────────────────────────────
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))        # segundos entre ciclos
 STATE_FILE     = Path(os.getenv("STATE_FILE", "state.json"))

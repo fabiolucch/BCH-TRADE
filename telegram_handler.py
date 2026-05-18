@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from bot_config import CONFIG_FIELDS, BotConfig
-from config import PAIRS, TAKE_PROFIT_PCT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN, DAILY_REPORT_TIME
+from config import FEE_RATE, PAIRS, TAKE_PROFIT_PCT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN, DAILY_REPORT_TIME
 from strategies import PRESETS
 
 if TYPE_CHECKING:
@@ -344,12 +344,14 @@ class TelegramHandler:
                 lines.append(f"• {pair}: _sem posição_")
                 continue
             try:
-                price    = await self.engine.exchange.get_price(pair)
-                pnl_u    = (price - pos["avg_price"]) * pos["total_qty"]
-                pnl_pct  = (price / pos["avg_price"] - 1) * 100
-                tp_price = pos["avg_price"] * (1 + cfg["take_profit_pct"] / 100)
-                emoji    = "🟢" if pnl_pct >= 0 else "🔴"
-                quote    = pair.split("/")[1]
+                price         = await self.engine.exchange.get_price(pair)
+                pnl_gross     = (price - pos["avg_price"]) * pos["total_qty"]
+                pnl_pct       = (price / pos["avg_price"] - 1) * 100
+                est_sell_fee  = price * pos["total_qty"] * FEE_RATE
+                pnl_net_est   = pnl_gross - pos["total_fees_usdt"] - est_sell_fee
+                tp_price      = pos["avg_price"] * (1 + cfg["take_profit_pct"] / 100)
+                emoji         = "🟢" if pnl_net_est >= 0 else "🔴"
+                quote         = pair.split("/")[1]
 
                 trail_line = ""
                 if pos["trailing_active"]:
@@ -359,7 +361,8 @@ class TelegramHandler:
                     f"{emoji} *{pair}*\n"
                     f"  Aportes: {pos['order_count']} | Qty: `{pos['total_qty']:.6f}`\n"
                     f"  Avg: `{pos['avg_price']:.4f}` | Atual: `{price:.4f}`\n"
-                    f"  PnL: `{pnl_u:+.2f} {quote} ({pnl_pct:+.2f}%)`\n"
+                    f"  PnL bruto: `{pnl_gross:+.2f} {quote}` ({pnl_pct:+.2f}%)\n"
+                    f"  PnL líq. est.: `{pnl_net_est:+.2f} {quote}`\n"
                     f"  Alvo TP: `{tp_price:.4f}`"
                     f"{trail_line}"
                 )
@@ -386,12 +389,19 @@ class TelegramHandler:
         def summarize(trades: list, label: str) -> str:
             if not trades:
                 return f"*{label}:* Nenhuma operação finalizada."
-            total = sum(t["pnl_usdt"] for t in trades)
-            emoji = "🟢" if total >= 0 else "🔴"
-            lines = [f"*{label}:* {emoji} `{total:+.2f}` USDT ({len(trades)} ops)"]
+            total_net  = sum(t["pnl_usdt"] for t in trades)
+            total_fees = sum(t.get("fees_usdt", 0.0) for t in trades)
+            emoji = "🟢" if total_net >= 0 else "🔴"
+            lines = [
+                f"*{label}:* {emoji} `{total_net:+.2f}` USDT líq. "
+                f"| Taxas: `{total_fees:.4f}` USDT ({len(trades)} ops)"
+            ]
             for t in trades:
                 e = "🟢" if t["pnl_usdt"] >= 0 else "🔴"
-                lines.append(f"  {e} {t['pair']}: `{t['pnl_usdt']:+.2f}` ({t['pnl_pct']:+.2f}%)")
+                fee_str = f" | taxa `{t.get('fees_usdt', 0):.4f}`" if t.get("fees_usdt") else ""
+                lines.append(
+                    f"  {e} {t['pair']}: líq. `{t['pnl_usdt']:+.2f}` ({t['pnl_pct']:+.2f}%){fee_str}"
+                )
             return "\n".join(lines)
 
         cfg  = self.bot_config.get()
