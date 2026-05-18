@@ -96,23 +96,45 @@ class TelegramHandler:
     # ── Menus (texto + teclado) ───────────────────────────────────────────────
 
     def _build_main_menu(self) -> tuple[str, InlineKeyboardMarkup]:
-        cfg = self.bot_config.get()
+        cfg            = self.bot_config.get()
         strategy_label = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
-        active_pairs   = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
+        open_pos       = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
+        active_pairs   = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS] or list(PAIRS)
+        running        = cfg.get("bot_running", False)
 
         text = (
             "🤖 *DCA Trading Bot*\n\n"
+            f"{'🟢' if running else '🔴'} Status: *{'Rodando' if running else 'Parado'}*\n"
             f"📌 Estratégia: *{strategy_label}*\n"
-            f"📊 Posições abertas: *{len(active_pairs)}* de *{len(PAIRS)}*\n"
-            f"🔁 Pares: `{', '.join(PAIRS)}`"
+            f"📊 Posições abertas: *{len(open_pos)}* de *{len(PAIRS)}*\n"
+            f"🔁 Pares ativos: `{', '.join(active_pairs)}`"
         )
+        toggle_label = "⏹ Parar Bot" if running else "▶️ Iniciar Bot"
         kb = _kb(
-            [_btn("📊 Status",           "nav:status"),
-             _btn("💰 PnL",             "nav:pnl")],
-            [_btn("⚙️ Configurações",   "nav:config")],
-            [_btn("🔴 Fechar Posição",  "nav:close_menu")],
+            [_btn("📊 Status",              "nav:status"),
+             _btn("💰 PnL",                "nav:pnl")],
+            [_btn("⚙️ Configurações",      "nav:config")],
+            [_btn("📍 Pares Ativos",        "nav:pairs")],
+            [_btn(toggle_label,             "toggle:running"),
+             _btn("🔴 Fechar Posição",     "nav:close_menu")],
         )
         return text, kb
+
+    def _build_pairs_menu(self) -> tuple[str, InlineKeyboardMarkup]:
+        cfg    = self.bot_config.get()
+        active = set(cfg.get("active_pairs", PAIRS))
+        text = (
+            "📍 *Pares Ativos*\n\n"
+            "Toque para ativar/desativar um par.\n"
+            "_Pares desativados não abrem novas posições._\n"
+            "_Posições já abertas continuam sendo gerenciadas._"
+        )
+        rows = [
+            [_btn(f"{'✅' if p in active else '❌'} {p}", f"pair_toggle:{p.replace('/', '_')}")]
+            for p in PAIRS
+        ]
+        rows.append([_btn("◀️ Voltar", "nav:main")])
+        return text, _kb(*rows)
 
     def _build_config_menu(self) -> tuple[str, InlineKeyboardMarkup]:
         cfg = self.bot_config.get()
@@ -239,6 +261,7 @@ class TelegramHandler:
             "strategies" : self._build_strategies_menu,
             "custom"     : self._build_custom_menu,
             "close_menu" : self._build_close_menu,
+            "pairs"      : self._build_pairs_menu,
         }
 
         if action == "nav":
@@ -270,12 +293,50 @@ class TelegramHandler:
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
         elif action == "toggle":
-            if param == "trailing":
+            if param == "running":
+                cfg     = self.bot_config.get()
+                new_val = not cfg.get("bot_running", False)
+                self.bot_config.set_running(new_val)
+                if new_val:
+                    active = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS] or list(PAIRS)
+                    strat  = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
+                    await self.send(
+                        f"▶️ *Bot iniciado*\n"
+                        f"├ Estratégia: `{strat}`\n"
+                        f"└ Pares: `{', '.join(active)}`"
+                    )
+                else:
+                    await self.send(
+                        "⏹ *Bot parado.*\n"
+                        "_Posições abertas continuam sendo monitoradas para TP e trailing._"
+                    )
+                text, kb = self._build_main_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+            elif param == "trailing":
                 enabled = self.bot_config.toggle_trailing()
                 state_txt = "✅ ativado" if enabled else "❌ desativado"
                 await query.answer(f"Trailing Stop {state_txt}!", show_alert=True)
                 text, kb = self._build_config_menu()
                 await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "pair_toggle":
+            pair = param.replace("_", "/")
+            if pair not in PAIRS:
+                return
+            cfg    = self.bot_config.get()
+            active = set(p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS)
+            if pair in active:
+                if len(active) <= 1:
+                    await query.answer("⚠️ Mantenha pelo menos um par ativo!", show_alert=True)
+                    return
+                active.discard(pair)
+            else:
+                active.add(pair)
+            self.bot_config.set_active_pairs(list(active))
+            text, kb = self._build_pairs_menu()
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            return
 
         elif action == "set":
             meta = CONFIG_FIELDS.get(param, {})

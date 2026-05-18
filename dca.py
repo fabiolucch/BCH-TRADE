@@ -79,8 +79,14 @@ class DCAEngine:
 
     async def _check_pair(self, pair: str) -> None:
         async with self._locks[pair]:
+            pos = self.state.get_position(pair)
+            cfg = self.bot_config.get()
+
+            # Quando parado e sem posição aberta, não há nada a fazer neste par
+            if not pos["is_active"] and not cfg.get("bot_running", False):
+                return
+
             price = await self.exchange.get_price(pair)
-            pos   = self.state.get_position(pair)
 
             logger.debug(
                 f"[{pair}] preço={price:.6f} | ativo={pos['is_active']} | "
@@ -91,7 +97,10 @@ class DCAEngine:
             if pos["is_active"]:
                 await self._evaluate_open_position(pair, price, pos)
             else:
-                await self._buy(pair, price, order_num=1)
+                # Só abre posição nova se par estiver na lista ativa
+                active = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS]
+                if pair in active:
+                    await self._buy(pair, price, order_num=1)
 
     async def _evaluate_open_position(self, pair: str, price: float, pos: dict) -> None:
         cfg = self.bot_config.get()
@@ -138,7 +147,7 @@ class DCAEngine:
             return
 
         drop_pct = (pos["last_buy_price"] - price) / pos["last_buy_price"] * 100
-        if drop_pct >= cfg["dca_drop_pct"]:
+        if drop_pct >= cfg["dca_drop_pct"] and cfg.get("bot_running", False):
             await self._buy(pair, price, order_num=pos["order_count"] + 1)
 
     # ── Execução de ordens ────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ from config import (
     MARTINGALE_LEVELS,
     MAX_DCA_ORDERS,
     ORDER_SIZE_USDT,
+    PAIRS,
     TAKE_PROFIT_PCT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_PCT,
@@ -31,16 +32,18 @@ _DEFAULTS: dict = {
     "trailing_stop_enabled" : TRAILING_STOP_ENABLED,
     "trailing_stop_pct"     : TRAILING_STOP_PCT,
     "martingale_levels"     : MARTINGALE_LEVELS,
+    "bot_running"           : False,          # inicia parado; usuario ativa pelo Telegram
+    "active_pairs"          : list(PAIRS),    # subconjunto dos PAIRS do .env
 }
 
 # Metadados dos campos configuráveis pelo usuário
 CONFIG_FIELDS: dict[str, dict] = {
-    "dca_drop_pct"      : {"label": "Queda para DCA (%)",        "type": float, "min": 0.1, "max": 50.0},
+    "dca_drop_pct"      : {"label": "Queda para DCA (%)",             "type": float, "min": 0.1, "max": 50.0},
     "order_size_usdt"   : {"label": "Valor inicial do aporte (USDT)", "type": float, "min": 1.0, "max": 100_000.0},
-    "take_profit_pct"   : {"label": "Take Profit (%)",           "type": float, "min": 0.1, "max": 100.0},
-    "max_dca_orders"    : {"label": "Máximo de aportes",         "type": int,   "min": 1,   "max": 100},
-    "trailing_stop_pct" : {"label": "Trailing Stop (%)",         "type": float, "min": 0.1, "max": 20.0},
-    "martingale_levels" : {"label": "Níveis de Martingale (0-3)", "type": int,   "min": 0,   "max": 3},
+    "take_profit_pct"   : {"label": "Take Profit (%)",                "type": float, "min": 0.1, "max": 100.0},
+    "max_dca_orders"    : {"label": "Máximo de aportes",              "type": int,   "min": 1,   "max": 100},
+    "trailing_stop_pct" : {"label": "Trailing Stop (%)",              "type": float, "min": 0.1, "max": 20.0},
+    "martingale_levels" : {"label": "Níveis de Martingale (0-3)",     "type": int,   "min": 0,   "max": 3},
 }
 
 
@@ -57,7 +60,14 @@ class BotConfig:
                     saved = json.load(f)
                 merged = deepcopy(_DEFAULTS)
                 merged.update(saved)
-                logger.info(f"Configuração carregada: estratégia='{merged['strategy']}'")
+                # Garante que active_pairs só contém pares válidos do .env atual
+                merged["active_pairs"] = [
+                    p for p in merged.get("active_pairs", PAIRS) if p in PAIRS
+                ] or list(PAIRS)
+                logger.info(
+                    f"Configuração carregada: estratégia='{merged['strategy']}' | "
+                    f"bot={'rodando' if merged['bot_running'] else 'parado'}"
+                )
                 return merged
             except Exception as exc:
                 logger.warning(f"Erro ao ler {CONFIG_FILE} ({exc}). Usando padrões do .env.")
@@ -115,3 +125,11 @@ class BotConfig:
         self._cfg["strategy"] = "personalizado"
         self._save()
         return self._cfg["trailing_stop_enabled"]
+
+    def set_running(self, value: bool) -> None:
+        self._cfg["bot_running"] = value
+        self._save()
+
+    def set_active_pairs(self, pairs: list[str]) -> None:
+        self._cfg["active_pairs"] = [p for p in pairs if p in PAIRS]
+        self._save()

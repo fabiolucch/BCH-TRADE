@@ -68,11 +68,14 @@ async def main() -> None:
 
     # ── Inicia Telegram antes do loop ─────────────────────────────────────────
     await telegram.start()
+    running    = bot_config.get()["bot_running"]
+    status_txt = "🟢 Rodando" if running else "🔴 Parado — use /menu → ▶️ Iniciar Bot"
     await telegram.send(
         f"🤖 *DCA Bot iniciado*\n"
         f"Modo: `{'DEMO' if TESTNET else 'PRODUÇÃO'}`\n"
         f"Pares: `{', '.join(PAIRS)}`\n"
-        f"Intervalo: `{CHECK_INTERVAL}s`"
+        f"Intervalo: `{CHECK_INTERVAL}s`\n"
+        f"Status: {status_txt}"
     )
 
     # ── Sinal de encerramento gracioso ────────────────────────────────────────
