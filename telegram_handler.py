@@ -146,6 +146,12 @@ class TelegramHandler:
             if levels > 0 else
             "🎲 Martingale: `OFF`\n"
         )
+        reentry = cfg.get("reentry_drop_pct", 0.0)
+        reentry_line = (
+            f"🔁 Re-entrada: `{reentry}%` abaixo da saída\n"
+            if reentry > 0 else
+            "🔁 Re-entrada: `imediata (OFF)`\n"
+        )
         text = (
             "⚙️ *Configurações*\n\n"
             f"📌 Estratégia atual: *{strategy_label}*\n"
@@ -155,7 +161,8 @@ class TelegramHandler:
             f"🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
             f"{mart_line}"
             f"{trail_icon} Trailing Stop: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
-            + (f" — `{cfg['trailing_stop_pct']}%`" if cfg["trailing_stop_enabled"] else "")
+            + (f" — `{cfg['trailing_stop_pct']}%`\n" if cfg["trailing_stop_enabled"] else "\n")
+            + reentry_line.rstrip("\n")
         )
         kb = _kb(
             [_btn("📋 Estratégias Prontas",  "nav:strategies"),
@@ -213,6 +220,8 @@ class TelegramHandler:
             mart_val = f"`{levels} níveis` ({sizes} USDT)"
         else:
             mart_val = "`OFF`"
+        reentry = cfg.get("reentry_drop_pct", 0.0)
+        reentry_val = f"`{reentry}%` abaixo da saída" if reentry > 0 else "`OFF` (imediata)"
         text = (
             "🔧 *Configuração Personalizada*\n\n"
             "Toque em um parâmetro para alterar:\n\n"
@@ -221,7 +230,8 @@ class TelegramHandler:
             f"  🎯 Take Profit: `{cfg['take_profit_pct']}%`\n"
             f"  🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
             f"  🎲 Martingale: {mart_val}\n"
-            f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`"
+            f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`\n"
+            f"  🔁 Re-entrada: {reentry_val}"
         )
         kb = _kb(
             [_btn("📉 Queda DCA",      "set:dca_drop_pct"),
@@ -230,6 +240,7 @@ class TelegramHandler:
              _btn("🔢 Máx. aportes",  "set:max_dca_orders")],
             [_btn("🎲 Martingale",     "set:martingale_levels"),
              _btn("📈 Trailing %",     "set:trailing_stop_pct")],
+            [_btn("🔁 Re-entrada %",   "set:reentry_drop_pct")],
             [_btn("◀️ Voltar",         "nav:config")],
         )
         return text, kb
@@ -425,10 +436,20 @@ class TelegramHandler:
         lines = ["*📊 Status das Posições*\n"]
         cfg   = self.bot_config.get()
 
+        reentry_drop = cfg.get("reentry_drop_pct", 0.0)
+
         for pair in PAIRS:
             pos = self.state.get_position(pair)
             if not pos["is_active"]:
-                lines.append(f"• {pair}: _sem posição_")
+                last_exit = pos.get("last_exit_price", 0.0)
+                if last_exit > 0 and reentry_drop > 0:
+                    threshold = last_exit * (1 - reentry_drop / 100)
+                    lines.append(
+                        f"• {pair}: _aguardando re-entrada_\n"
+                        f"  Saída: `{last_exit:.4f}` | Limiar: `{threshold:.4f}` (-{reentry_drop}%)"
+                    )
+                else:
+                    lines.append(f"• {pair}: _sem posição_")
                 continue
             try:
                 price         = await self.engine.exchange.get_price(pair)

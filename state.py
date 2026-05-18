@@ -23,6 +23,8 @@ _EMPTY_POSITION: dict[str, Any] = {
     "trailing_active"     : False,
     "peak_price"          : 0.0,
     "trailing_stop_price" : 0.0,
+    # Re-entry threshold
+    "last_exit_price"     : 0.0,
 }
 
 _EMPTY_STATE: dict[str, Any] = {
@@ -139,7 +141,9 @@ class StateManager:
             "closed_at"    : now,
         }
         self._data["trade_history"].append(trade)
-        self._data["positions"][pair] = deepcopy(_EMPTY_POSITION)
+        new_pos = deepcopy(_EMPTY_POSITION)
+        new_pos["last_exit_price"] = exit_price
+        self._data["positions"][pair] = new_pos
         self._save()
         return trade
 

@@ -14,6 +14,7 @@ from config import (
     MAX_DCA_ORDERS,
     ORDER_SIZE_USDT,
     PAIRS,
+    REENTRY_DROP_PCT,
     TAKE_PROFIT_PCT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_PCT,
@@ -32,6 +33,7 @@ _DEFAULTS: dict = {
     "trailing_stop_enabled" : TRAILING_STOP_ENABLED,
     "trailing_stop_pct"     : TRAILING_STOP_PCT,
     "martingale_levels"     : MARTINGALE_LEVELS,
+    "reentry_drop_pct"      : REENTRY_DROP_PCT,
     "bot_running"           : False,          # inicia parado; usuario ativa pelo Telegram
     "active_pairs"          : list(PAIRS),    # subconjunto dos PAIRS do .env
 }
@@ -44,6 +46,7 @@ CONFIG_FIELDS: dict[str, dict] = {
     "max_dca_orders"    : {"label": "Máximo de aportes",              "type": int,   "min": 1,   "max": 100},
     "trailing_stop_pct" : {"label": "Trailing Stop (%)",              "type": float, "min": 0.1, "max": 20.0},
     "martingale_levels" : {"label": "Níveis de Martingale (0-3)",     "type": int,   "min": 0,   "max": 3},
+    "reentry_drop_pct"  : {"label": "Queda p/ re-entrada (%)",        "type": float, "min": 0.0, "max": 20.0},
 }
 
 

@@ -24,6 +24,7 @@ ORDER_SIZE_USDT = float(os.getenv("ORDER_SIZE_USDT", "20.0")) # valor em quote p
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "1.5"))  # % acima do preço médio para vender
 MAX_DCA_ORDERS    = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de aportes por par
 MARTINGALE_LEVELS = int(os.getenv("MARTINGALE_LEVELS", "0"))   # 0=off; 1-3 níveis de dobra linear
+REENTRY_DROP_PCT  = float(os.getenv("REENTRY_DROP_PCT", "1.5")) # % abaixo do preço de saída para re-entrada (0=desativado)
 
 # ── Trailing Stop (padrão inicial; ajustável via Telegram) ───────────────────
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "False").strip().lower() in ("true", "1", "yes")

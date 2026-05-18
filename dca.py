@@ -100,6 +100,17 @@ class DCAEngine:
                 # Só abre posição nova se par estiver na lista ativa
                 active = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS]
                 if pair in active:
+                    # Verificação de re-entrada: aguarda queda abaixo do preço de saída
+                    reentry_drop = cfg.get("reentry_drop_pct", 0.0)
+                    last_exit    = pos.get("last_exit_price", 0.0)
+                    if last_exit > 0 and reentry_drop > 0:
+                        threshold = last_exit * (1 - reentry_drop / 100)
+                        if price > threshold:
+                            logger.debug(
+                                f"[{pair}] Re-entrada bloqueada: preço {price:.4f} > "
+                                f"limiar {threshold:.4f} (saída {last_exit:.4f} -{reentry_drop}%)"
+                            )
+                            return
                     await self._buy(pair, price, order_num=1)
 
     async def _evaluate_open_position(self, pair: str, price: float, pos: dict) -> None:
