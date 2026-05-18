@@ -45,8 +45,15 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(console)
     logger.addHandler(file_h)
 
-    # Suprime traceback de CancelledError do shutdown do python-telegram-bot
-    logging.getLogger("telegram").addFilter(_SuppressTelegramCancelledError())
+    # Suprime traceback de CancelledError do shutdown do python-telegram-bot.
+    # O filtro precisa estar no logger que origina o registro (não no pai) e
+    # também nos handlers para interceptar o que chega pelo lastResort do root.
+    _cf = _SuppressTelegramCancelledError()
+    console.addFilter(_cf)
+    file_h.addFilter(_cf)
+    logging.getLogger("telegram.ext._application").addFilter(_cf)
+    if logging.lastResort:
+        logging.lastResort.addFilter(_cf)
 
     return logger
 
