@@ -1,6 +1,11 @@
 """telegram_handler.py — Menu interativo, comandos e relatórios agendados."""
 import asyncio
+import io
 import logging
+import matplotlib
+matplotlib.use("Agg")  # backend sem display — obrigatório em servidor
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -55,11 +60,12 @@ class TelegramHandler:
     def _register_handlers(self) -> None:
         guard = self._only_owner
 
-        self.app.add_handler(CommandHandler("start",  guard(self._cmd_menu)))
-        self.app.add_handler(CommandHandler("menu",   guard(self._cmd_menu)))
-        self.app.add_handler(CommandHandler("status", guard(self._cmd_status)))
-        self.app.add_handler(CommandHandler("pnl",    guard(self._cmd_pnl)))
-        self.app.add_handler(CommandHandler("close",  guard(self._cmd_close_text)))
+        self.app.add_handler(CommandHandler("start",      guard(self._cmd_menu)))
+        self.app.add_handler(CommandHandler("menu",       guard(self._cmd_menu)))
+        self.app.add_handler(CommandHandler("status",     guard(self._cmd_status)))
+        self.app.add_handler(CommandHandler("pnl",        guard(self._cmd_pnl)))
+        self.app.add_handler(CommandHandler("chart",      guard(self._cmd_chart)))
+        self.app.add_handler(CommandHandler("close",      guard(self._cmd_close_text)))
         self.app.add_handler(CommandHandler("panic_sell", guard(self._cmd_close_text)))
 
         self.app.add_handler(CallbackQueryHandler(guard(self._on_callback)))
@@ -121,19 +127,25 @@ class TelegramHandler:
         return text, kb
 
     def _build_pairs_menu(self) -> tuple[str, InlineKeyboardMarkup]:
-        cfg    = self.bot_config.get()
-        active = set(cfg.get("active_pairs", PAIRS))
+        cfg       = self.bot_config.get()
+        active    = set(cfg.get("active_pairs", PAIRS))
+        extra     = set(cfg.get("extra_pairs", []))
+        all_pairs = self.bot_config.get_all_pairs()
         text = (
             "📍 *Pares Ativos*\n\n"
             "Toque para ativar/desativar um par.\n"
-            "_Pares desativados não abrem novas posições._\n"
-            "_Posições já abertas continuam sendo gerenciadas._"
+            "🗑️ = par adicionado via Telegram (pode remover).\n"
+            "_Posições abertas continuam sendo gerenciadas._"
         )
-        rows = [
-            [_btn(f"{'✅' if p in active else '❌'} {p}", f"pair_toggle:{p.replace('/', '_')}")]
-            for p in PAIRS
-        ]
-        rows.append([_btn("◀️ Voltar", "nav:main")])
+        rows = []
+        for p in all_pairs:
+            safe = p.replace("/", "_")
+            icon = "✅" if p in active else "❌"
+            row  = [_btn(f"{icon} {p}", f"pair_toggle:{safe}")]
+            if p in extra:
+                row.append(_btn("🗑️", f"pair_remove:{safe}"))
+            rows.append(row)
+        rows.append([_btn("➕ Adicionar par", "pair_add"), _btn("◀️ Voltar", "nav:main")])
         return text, _kb(*rows)
 
     def _build_config_menu(self) -> tuple[str, InlineKeyboardMarkup]:
@@ -152,6 +164,14 @@ class TelegramHandler:
             if reentry > 0 else
             "🔁 Re-entrada: `imediata (OFF)`\n"
         )
+        rsi_on   = cfg.get("rsi_enabled", False)
+        rsi_icon = "✅" if rsi_on else "❌"
+        rsi_line = (
+            f"📊 Filtro RSI: `ON` — entra se RSI < `{cfg.get('rsi_threshold', 45.0)}`"
+            f" (período `{cfg.get('rsi_period', 14)}`)\n"
+            if rsi_on else
+            "📊 Filtro RSI: `OFF`\n"
+        )
         text = (
             "⚙️ *Configurações*\n\n"
             f"📌 Estratégia atual: *{strategy_label}*\n"
@@ -162,12 +182,14 @@ class TelegramHandler:
             f"{mart_line}"
             f"{trail_icon} Trailing Stop: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
             + (f" — `{cfg['trailing_stop_pct']}%`\n" if cfg["trailing_stop_enabled"] else "\n")
-            + reentry_line.rstrip("\n")
+            + reentry_line
+            + rsi_line.rstrip("\n")
         )
         kb = _kb(
             [_btn("📋 Estratégias Prontas",  "nav:strategies"),
              _btn("🔧 Personalizar",         "nav:custom")],
-            [_btn(f"{trail_icon} Trailing Stop", "toggle:trailing")],
+            [_btn(f"{trail_icon} Trailing Stop", "toggle:trailing"),
+             _btn(f"{rsi_icon} Filtro RSI",      "toggle:rsi")],
             [_btn("◀️ Voltar",               "nav:main")],
         )
         return text, kb
@@ -220,8 +242,13 @@ class TelegramHandler:
             mart_val = f"`{levels} níveis` ({sizes} USDT)"
         else:
             mart_val = "`OFF`"
-        reentry = cfg.get("reentry_drop_pct", 0.0)
+        reentry     = cfg.get("reentry_drop_pct", 0.0)
         reentry_val = f"`{reentry}%` abaixo da saída" if reentry > 0 else "`OFF` (imediata)"
+        rsi_on  = cfg.get("rsi_enabled", False)
+        rsi_val = (
+            f"`{cfg.get('rsi_threshold', 45.0)}` (período `{cfg.get('rsi_period', 14)}`)"
+            if rsi_on else "`OFF`"
+        )
         text = (
             "🔧 *Configuração Personalizada*\n\n"
             "Toque em um parâmetro para alterar:\n\n"
@@ -231,7 +258,8 @@ class TelegramHandler:
             f"  🔢 Máx. aportes: `{cfg['max_dca_orders']}`\n"
             f"  🎲 Martingale: {mart_val}\n"
             f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`\n"
-            f"  🔁 Re-entrada: {reentry_val}"
+            f"  🔁 Re-entrada: {reentry_val}\n"
+            f"  📊 RSI threshold: {rsi_val}"
         )
         kb = _kb(
             [_btn("📉 Queda DCA",      "set:dca_drop_pct"),
@@ -240,7 +268,9 @@ class TelegramHandler:
              _btn("🔢 Máx. aportes",  "set:max_dca_orders")],
             [_btn("🎲 Martingale",     "set:martingale_levels"),
              _btn("📈 Trailing %",     "set:trailing_stop_pct")],
-            [_btn("🔁 Re-entrada %",   "set:reentry_drop_pct")],
+            [_btn("🔁 Re-entrada %",   "set:reentry_drop_pct"),
+             _btn("📊 RSI threshold",  "set:rsi_threshold")],
+            [_btn("🔢 Período RSI",    "set:rsi_period")],
             [_btn("◀️ Voltar",         "nav:config")],
         )
         return text, kb
@@ -284,7 +314,21 @@ class TelegramHandler:
                 await query.edit_message_text(
                     text,
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=_kb([_btn("◀️ Voltar", "nav:main")]),
+                    reply_markup=_kb(
+                        [_btn("📊 Ver Gráfico", "nav:chart")],
+                        [_btn("◀️ Voltar", "nav:main")],
+                    ),
+                )
+                return
+            if param == "chart":
+                await query.edit_message_text("📊 Gerando gráfico…")
+                await self.send_chart()
+                await query.edit_message_text(
+                    "📊 Gráfico enviado acima!",
+                    reply_markup=_kb(
+                        [_btn("💰 PnL", "nav:pnl")],
+                        [_btn("◀️ Menu", "nav:main")],
+                    ),
                 )
                 return
             builder = nav_map.get(param)
@@ -331,12 +375,39 @@ class TelegramHandler:
                 text, kb = self._build_config_menu()
                 await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
-        elif action == "pair_toggle":
+            elif param == "rsi":
+                enabled = self.bot_config.toggle_rsi()
+                state_txt = "✅ ativado" if enabled else "❌ desativado"
+                await query.answer(f"Filtro RSI {state_txt}!", show_alert=True)
+                text, kb = self._build_config_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+        elif action == "pair_add":
+            prompt = (
+                "➕ *Adicionar Novo Par*\n\n"
+                "Digite o símbolo no formato:\n"
+                "`SOL/USDT`, `XRP/USDT`, `BNB/USDT`…\n\n"
+                "_O par deve existir na OKX Spot._"
+            )
+            msg = await query.edit_message_text(prompt, parse_mode=ParseMode.MARKDOWN)
+            self._awaiting[query.message.chat_id] = ("add_pair", msg.message_id)
+            return
+
+        elif action == "pair_remove":
             pair = param.replace("_", "/")
-            if pair not in PAIRS:
+            self.bot_config.remove_extra_pair(pair)
+            await query.answer(f"Par {pair} removido.", show_alert=False)
+            text, kb = self._build_pairs_menu()
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            return
+
+        elif action == "pair_toggle":
+            pair      = param.replace("_", "/")
+            all_pairs = self.bot_config.get_all_pairs()
+            if pair not in all_pairs:
                 return
             cfg    = self.bot_config.get()
-            active = set(p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS)
+            active = set(p for p in cfg.get("active_pairs", all_pairs) if p in all_pairs)
             if pair in active:
                 if len(active) <= 1:
                     await query.answer("⚠️ Mantenha pelo menos um par ativo!", show_alert=True)
@@ -383,15 +454,29 @@ class TelegramHandler:
             return
 
         field, msg_id = pending
-        ok, feedback  = self.bot_config.set_field(field, update.message.text.strip())
-
         await update.message.delete()
 
-        text, kb = (
-            (feedback + "\n\n" + self._build_custom_menu()[0], self._build_custom_menu()[1])
-            if ok
-            else (f"⚠️ {feedback}\n\nTente novamente:", _kb([_btn("◀️ Cancelar", "nav:custom")]))
-        )
+        if field == "add_pair":
+            symbol = update.message.text.strip().upper()
+            # Valida formato e existência na exchange antes de adicionar
+            if "/" not in symbol or len(symbol.split("/")) != 2:
+                ok, feedback = False, "Formato inválido. Use: `SOL/USDT`"
+            elif self.engine and not self.engine.exchange.validate_pair(symbol):
+                ok, feedback = False, f"Par `{symbol}` não encontrado na OKX Spot."
+            else:
+                ok, feedback = self.bot_config.add_extra_pair(symbol)
+            if ok:
+                pairs_text, pairs_kb = self._build_pairs_menu()
+                text, kb = feedback + "\n\n" + pairs_text, pairs_kb
+            else:
+                text, kb = f"⚠️ {feedback}\n\nTente novamente:", _kb([_btn("◀️ Cancelar", "nav:pairs")])
+        else:
+            ok, feedback = self.bot_config.set_field(field, update.message.text.strip())
+            if ok:
+                custom_text, custom_kb = self._build_custom_menu()
+                text, kb = feedback + "\n\n" + custom_text, custom_kb
+            else:
+                text, kb = f"⚠️ {feedback}\n\nTente novamente:", _kb([_btn("◀️ Cancelar", "nav:custom")])
 
         try:
             await self.app.bot.edit_message_text(
@@ -423,7 +508,7 @@ class TelegramHandler:
             await update.message.reply_text("Uso: `/close BTC/USDT`", parse_mode=ParseMode.MARKDOWN)
             return
         pair = ctx.args[0].upper().replace("-", "/")
-        if pair not in PAIRS:
+        if pair not in self.bot_config.get_all_pairs():
             await update.message.reply_text(f"Par `{pair}` não monitorado.", parse_mode=ParseMode.MARKDOWN)
             return
         await update.message.reply_text(f"⏳ Fechando *{pair}*…", parse_mode=ParseMode.MARKDOWN)
@@ -433,12 +518,13 @@ class TelegramHandler:
     # ── Status ────────────────────────────────────────────────────────────────
 
     async def _send_status(self, message=None, query=None) -> None:
-        lines = ["*📊 Status das Posições*\n"]
-        cfg   = self.bot_config.get()
+        lines     = ["*📊 Status das Posições*\n"]
+        cfg       = self.bot_config.get()
+        all_pairs = self.bot_config.get_all_pairs()
 
         reentry_drop = cfg.get("reentry_drop_pct", 0.0)
 
-        for pair in PAIRS:
+        for pair in all_pairs:
             pos = self.state.get_position(pair)
             if not pos["is_active"]:
                 last_exit = pos.get("last_exit_price", 0.0)
@@ -512,9 +598,9 @@ class TelegramHandler:
                 )
             return "\n".join(lines)
 
-        cfg  = self.bot_config.get()
+        cfg       = self.bot_config.get()
         open_lines = []
-        for pair in PAIRS:
+        for pair in self.bot_config.get_all_pairs():
             pos = self.state.get_position(pair)
             if pos["is_active"]:
                 quote = pair.split("/")[1]
@@ -535,6 +621,79 @@ class TelegramHandler:
         parts += open_lines or ["  Nenhuma posição aberta."]
         return "\n".join(parts)
 
+    # ── Gráfico PnL ───────────────────────────────────────────────────────────
+
+    def _generate_pnl_chart(self) -> "io.BytesIO | None":
+        history = self.state.get_trade_history()
+        if not history:
+            return None
+
+        trades = sorted(history, key=lambda t: t["closed_at"])
+        dates, cumulative, total = [], [], 0.0
+        for t in trades:
+            try:
+                dt = datetime.fromisoformat(t["closed_at"])
+            except Exception:
+                continue
+            total += t.get("pnl_usdt", 0.0)
+            dates.append(dt)
+            cumulative.append(total)
+
+        if not dates:
+            return None
+
+        color = "#00d4aa" if total >= 0 else "#ff6b6b"
+        fig, ax = plt.subplots(figsize=(10, 5), facecolor="#1a1a2e")
+        ax.set_facecolor("#16213e")
+        ax.plot(dates, cumulative, color=color, linewidth=2.5, zorder=3)
+        ax.fill_between(dates, cumulative, alpha=0.15, color=color)
+        ax.axhline(y=0, color="#ffffff40", linestyle="--", linewidth=1)
+        ax.scatter(dates, cumulative,
+                   color=["#00d4aa" if v >= 0 else "#ff6b6b" for v in cumulative],
+                   s=40, zorder=4)
+        ax.annotate(
+            f"{total:+.2f} USDT",
+            xy=(dates[-1], cumulative[-1]),
+            xytext=(8, 8), textcoords="offset points",
+            color=color, fontsize=11, fontweight="bold",
+        )
+        ax.set_title("PnL Acumulado (USDT)", fontsize=13, fontweight="bold",
+                     color="white", pad=10)
+        ax.set_xlabel("Data", color="#aaaaaa", fontsize=9)
+        ax.set_ylabel("PnL (USDT)", color="#aaaaaa", fontsize=9)
+        ax.tick_params(colors="#aaaaaa", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color("#333355")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+        plt.xticks(rotation=30, ha="right")
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=100, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+
+    async def send_chart(self, caption: str = "📈 *PnL Acumulado*") -> None:
+        buf = self._generate_pnl_chart()
+        if buf is None:
+            await self.send("📊 Nenhum trade finalizado ainda para gerar gráfico.")
+            return
+        try:
+            await self.app.bot.send_photo(
+                chat_id=TELEGRAM_CHAT_ID,
+                photo=buf,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:
+            logger.error(f"Falha ao enviar gráfico: {exc}")
+
+    async def _cmd_chart(self, update: Update, _ctx) -> None:
+        await update.message.reply_text("📊 Gerando gráfico…")
+        await self.send_chart()
+
     # ── Schedulers ────────────────────────────────────────────────────────────
 
     async def schedule_daily_report(self) -> None:
@@ -550,6 +709,7 @@ class TelegramHandler:
                 target += timedelta(days=1)
             await asyncio.sleep((target - now).total_seconds())
             await self.send(self._build_pnl_report("Relatório Diário"))
+            await self.send_chart("📊 *PnL Acumulado — Relatório Diário*")
 
     async def schedule_monthly_report(self) -> None:
         while True:
@@ -562,6 +722,7 @@ class TelegramHandler:
                                      hour=0, minute=0, second=0, microsecond=0)
             await asyncio.sleep((target - now).total_seconds())
             await self.send(self._build_pnl_report("Relatório Mensal"))
+            await self.send_chart("📊 *PnL Acumulado — Relatório Mensal*")
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
 

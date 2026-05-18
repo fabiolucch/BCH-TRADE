@@ -15,6 +15,9 @@ from config import (
     ORDER_SIZE_USDT,
     PAIRS,
     REENTRY_DROP_PCT,
+    RSI_ENABLED,
+    RSI_PERIOD,
+    RSI_THRESHOLD,
     TAKE_PROFIT_PCT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_PCT,
@@ -34,8 +37,12 @@ _DEFAULTS: dict = {
     "trailing_stop_pct"     : TRAILING_STOP_PCT,
     "martingale_levels"     : MARTINGALE_LEVELS,
     "reentry_drop_pct"      : REENTRY_DROP_PCT,
+    "rsi_enabled"           : RSI_ENABLED,
+    "rsi_threshold"         : RSI_THRESHOLD,
+    "rsi_period"            : RSI_PERIOD,
     "bot_running"           : False,          # inicia parado; usuario ativa pelo Telegram
-    "active_pairs"          : list(PAIRS),    # subconjunto dos PAIRS do .env
+    "active_pairs"          : list(PAIRS),    # subconjunto de todos os pares ativos
+    "extra_pairs"           : [],             # pares adicionados via Telegram (fora do .env)
 }
 
 # Metadados dos campos configuráveis pelo usuário
@@ -47,6 +54,8 @@ CONFIG_FIELDS: dict[str, dict] = {
     "trailing_stop_pct" : {"label": "Trailing Stop (%)",              "type": float, "min": 0.1, "max": 20.0},
     "martingale_levels" : {"label": "Níveis de Martingale (0-3)",     "type": int,   "min": 0,   "max": 3},
     "reentry_drop_pct"  : {"label": "Queda p/ re-entrada (%)",        "type": float, "min": 0.0, "max": 20.0},
+    "rsi_threshold"     : {"label": "RSI máximo para entrada",        "type": float, "min": 10.0, "max": 90.0},
+    "rsi_period"        : {"label": "Período do RSI (candles)",       "type": int,   "min": 5,    "max": 50},
 }
 
 
@@ -63,10 +72,14 @@ class BotConfig:
                     saved = json.load(f)
                 merged = deepcopy(_DEFAULTS)
                 merged.update(saved)
-                # Garante que active_pairs só contém pares válidos do .env atual
+                # extra_pairs = pares adicionados via Telegram fora do .env
+                extra = [p for p in merged.get("extra_pairs", []) if p not in PAIRS]
+                merged["extra_pairs"] = extra
+                all_pairs = list(PAIRS) + extra
+                # active_pairs deve ser subconjunto de todos os pares conhecidos
                 merged["active_pairs"] = [
-                    p for p in merged.get("active_pairs", PAIRS) if p in PAIRS
-                ] or list(PAIRS)
+                    p for p in merged.get("active_pairs", all_pairs) if p in all_pairs
+                ] or all_pairs
                 logger.info(
                     f"Configuração carregada: estratégia='{merged['strategy']}' | "
                     f"bot={'rodando' if merged['bot_running'] else 'parado'}"
@@ -133,6 +146,41 @@ class BotConfig:
         self._cfg["bot_running"] = value
         self._save()
 
+    def get_all_pairs(self) -> list[str]:
+        """Retorna PAIRS do .env + pares extras adicionados via Telegram (ordem estável)."""
+        extra = [p for p in self._cfg.get("extra_pairs", []) if p not in PAIRS]
+        return list(PAIRS) + extra
+
     def set_active_pairs(self, pairs: list[str]) -> None:
-        self._cfg["active_pairs"] = [p for p in pairs if p in PAIRS]
+        all_pairs = self.get_all_pairs()
+        self._cfg["active_pairs"] = [p for p in pairs if p in all_pairs]
+        self._save()
+
+    def toggle_rsi(self) -> bool:
+        self._cfg["rsi_enabled"] = not self._cfg["rsi_enabled"]
+        self._cfg["strategy"] = "personalizado"
+        self._save()
+        return self._cfg["rsi_enabled"]
+
+    def add_extra_pair(self, symbol: str) -> tuple[bool, str]:
+        symbol = symbol.upper().strip()
+        if "/" not in symbol or len(symbol.split("/")) != 2:
+            return False, "Formato inválido. Use: `SOL/USDT`"
+        if symbol in PAIRS:
+            return False, f"`{symbol}` já está nos pares do `.env`."
+        extra = self._cfg.get("extra_pairs", [])
+        if symbol in extra:
+            return False, f"`{symbol}` já foi adicionado."
+        extra.append(symbol)
+        self._cfg["extra_pairs"] = extra
+        active = self._cfg.get("active_pairs", list(PAIRS))
+        if symbol not in active:
+            active.append(symbol)
+        self._cfg["active_pairs"] = active
+        self._save()
+        return True, f"✅ Par `{symbol}` adicionado e ativado."
+
+    def remove_extra_pair(self, symbol: str) -> None:
+        self._cfg["extra_pairs"] = [p for p in self._cfg.get("extra_pairs", []) if p != symbol]
+        self._cfg["active_pairs"] = [p for p in self._cfg.get("active_pairs", []) if p != symbol]
         self._save()

@@ -1,6 +1,7 @@
 """dca.py — Motor de lógica DCA com Trailing Stop e gestão de capital."""
 import asyncio
 import logging
+from collections import defaultdict
 from typing import Awaitable, Callable
 
 from config import FEE_RATE, PAIRS
@@ -25,7 +26,8 @@ class DCAEngine:
         self.bot_config = bot_config
         self.notify     = notify
         # Lock por par: evita condição de corrida entre loop DCA e comandos Telegram
-        self._locks: dict[str, asyncio.Lock] = {pair: asyncio.Lock() for pair in PAIRS}
+        # defaultdict cria Lock automaticamente para novos pares adicionados via Telegram
+        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Rastreia se já foi emitido alerta de saldo baixo por moeda de quote
         self._low_balance_alerts: dict[str, bool] = {}
 
@@ -33,8 +35,9 @@ class DCAEngine:
 
     async def tick(self) -> None:
         """Processa todos os pares em sequência em cada ciclo."""
-        await self._check_capital()
-        for pair in PAIRS:
+        all_pairs = self.bot_config.get_all_pairs()
+        await self._check_capital(all_pairs)
+        for pair in all_pairs:
             try:
                 await self._check_pair(pair)
             except Exception as exc:
@@ -44,10 +47,10 @@ class DCAEngine:
 
     # ── Gestão de capital ─────────────────────────────────────────────────────
 
-    async def _check_capital(self) -> None:
+    async def _check_capital(self, pairs: list[str] | None = None) -> None:
         """Verifica saldo de cada quote currency e emite alertas no Telegram."""
         cfg    = self.bot_config.get()
-        quotes = set(pair.split("/")[1] for pair in PAIRS)
+        quotes = set(pair.split("/")[1] for pair in (pairs or self.bot_config.get_all_pairs()))
         for quote in quotes:
             try:
                 balance = await self.exchange.get_balance(quote)
@@ -98,7 +101,8 @@ class DCAEngine:
                 await self._evaluate_open_position(pair, price, pos)
             else:
                 # Só abre posição nova se par estiver na lista ativa
-                active = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS]
+                all_pairs = self.bot_config.get_all_pairs()
+                active    = [p for p in cfg.get("active_pairs", all_pairs) if p in all_pairs]
                 if pair in active:
                     # Verificação de re-entrada: aguarda queda abaixo do preço de saída
                     reentry_drop = cfg.get("reentry_drop_pct", 0.0)
@@ -109,6 +113,15 @@ class DCAEngine:
                             logger.debug(
                                 f"[{pair}] Re-entrada bloqueada: preço {price:.4f} > "
                                 f"limiar {threshold:.4f} (saída {last_exit:.4f} -{reentry_drop}%)"
+                            )
+                            return
+                    # Filtro RSI: só entra se RSI < threshold
+                    if cfg.get("rsi_enabled", False):
+                        rsi = await self._get_rsi(pair, cfg)
+                        if rsi is not None and rsi >= cfg.get("rsi_threshold", 45.0):
+                            logger.debug(
+                                f"[{pair}] Entrada bloqueada por RSI: "
+                                f"{rsi:.1f} ≥ {cfg['rsi_threshold']:.0f}"
                             )
                             return
                     await self._buy(pair, price, order_num=1)
@@ -261,6 +274,19 @@ class DCAEngine:
         )
         logger.info(msg.replace("*", "").replace("`", ""))
         await self.notify(msg)
+
+    # ── RSI ───────────────────────────────────────────────────────────────────
+
+    async def _get_rsi(self, pair: str, cfg: dict) -> float | None:
+        """Calcula RSI atual do par. Retorna None se falhar (não bloqueia entrada)."""
+        try:
+            period = int(cfg.get("rsi_period", 14))
+            ohlcv  = await self.exchange.get_ohlcv(pair, timeframe="1h", limit=period + 20)
+            closes = [float(c[4]) for c in ohlcv]
+            return self.exchange.calculate_rsi(closes, period=period)
+        except Exception as exc:
+            logger.warning(f"[{pair}] Falha ao calcular RSI: {exc}")
+            return None
 
     # ── Comando manual ────────────────────────────────────────────────────────
 

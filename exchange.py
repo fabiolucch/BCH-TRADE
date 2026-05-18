@@ -113,3 +113,36 @@ class ExchangeClient:
         except Exception as exc:
             logger.error(f"[{symbol}] Falha na venda: {exc}")
             return None
+
+    # ── Dados de mercado ──────────────────────────────────────────────────────
+
+    async def get_ohlcv(
+        self, symbol: str, timeframe: str = "1h", limit: int = 50
+    ) -> list:
+        """Retorna candles OHLCV: [[ts, open, high, low, close, volume], ...]"""
+        return await self._run(self._ex.fetch_ohlcv, symbol, timeframe, None, limit)
+
+    def validate_pair(self, symbol: str) -> bool:
+        """Verifica se o par existe nos mercados carregados da exchange."""
+        return symbol in self._ex.markets
+
+    @staticmethod
+    def calculate_rsi(closes: list[float], period: int = 14) -> float:
+        """RSI de Wilder com suavização exponencial. Retorna valor 0–100.
+
+        Retorna 50.0 (neutro) se não houver candles suficientes.
+        """
+        if len(closes) < period + 1:
+            return 50.0
+        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains  = [d if d > 0 else 0.0 for d in deltas]
+        losses = [-d if d < 0 else 0.0 for d in deltas]
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        for i in range(period, len(deltas)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(100.0 - (100.0 / (1 + rs)), 2)

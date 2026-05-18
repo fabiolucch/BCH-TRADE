@@ -1,11 +1,32 @@
 """state.py — Persistência do estado das posições e histórico de trades em JSON."""
 import json
 import logging
+import shutil
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from config import STATE_FILE
+
+_BACKUP_DIR  = Path("backups")
+_MAX_BACKUPS = 30
+
+
+def _do_backup() -> None:
+    """Copia state.json para backups/ com timestamp. Mantém os últimos _MAX_BACKUPS."""
+    if not STATE_FILE.exists():
+        return
+    try:
+        _BACKUP_DIR.mkdir(exist_ok=True)
+        ts   = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = _BACKUP_DIR / f"state_{ts}.json"
+        shutil.copy(STATE_FILE, dest)
+        backups = sorted(_BACKUP_DIR.glob("state_*.json"))
+        for old in backups[:-_MAX_BACKUPS]:
+            old.unlink()
+    except Exception as exc:
+        logging.getLogger("bot.state").warning(f"Falha no backup de estado: {exc}")
 
 logger = logging.getLogger("bot.state")
 
@@ -35,6 +56,7 @@ _EMPTY_STATE: dict[str, Any] = {
 
 class StateManager:
     def __init__(self) -> None:
+        _do_backup()   # snapshot do estado anterior antes de carregar
         self._data = self._load()
 
     def _load(self) -> dict:
@@ -145,6 +167,7 @@ class StateManager:
         new_pos["last_exit_price"] = exit_price
         self._data["positions"][pair] = new_pos
         self._save()
+        _do_backup()   # backup após cada trade concluído
         return trade
 
     def get_trade_history(self) -> list[dict]:

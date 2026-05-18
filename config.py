@@ -26,6 +26,11 @@ MAX_DCA_ORDERS    = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de ap
 MARTINGALE_LEVELS = int(os.getenv("MARTINGALE_LEVELS", "0"))   # 0=off; 1-3 níveis de dobra linear
 REENTRY_DROP_PCT  = float(os.getenv("REENTRY_DROP_PCT", "1.5")) # % abaixo do preço de saída para re-entrada (0=desativado)
 
+# ── Filtro RSI ────────────────────────────────────────────────────────────────
+RSI_ENABLED   = os.getenv("RSI_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+RSI_THRESHOLD = float(os.getenv("RSI_THRESHOLD", "45.0"))  # só entra se RSI < threshold
+RSI_PERIOD    = int(os.getenv("RSI_PERIOD", "14"))          # período padrão do RSI
+
 # ── Trailing Stop (padrão inicial; ajustável via Telegram) ───────────────────
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "False").strip().lower() in ("true", "1", "yes")
 TRAILING_STOP_PCT     = float(os.getenv("TRAILING_STOP_PCT", "1.0"))  # % abaixo do pico para vender
