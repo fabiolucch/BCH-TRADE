@@ -464,7 +464,18 @@ class TelegramHandler:
         logger.info("Telegram bot iniciado (polling ativo).")
 
     async def stop(self) -> None:
-        await self.app.updater.stop()
-        await self.app.stop()
-        await self.app.shutdown()
+        try:
+            await self.app.updater.stop()
+        except Exception:
+            pass
+        try:
+            await self.app.stop()
+        except asyncio.CancelledError:
+            # python-telegram-bot v20 re-levanta CancelledError do update_fetcher
+            # durante o shutdown — comportamento normal, não é um erro real
+            pass
+        try:
+            await self.app.shutdown()
+        except Exception:
+            pass
         logger.info("Telegram bot encerrado.")
