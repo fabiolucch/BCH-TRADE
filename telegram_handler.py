@@ -464,16 +464,22 @@ class TelegramHandler:
         logger.info("Telegram bot iniciado (polling ativo).")
 
     async def stop(self) -> None:
+        # Eleva temporariamente o nível do logger interno da biblioteca para
+        # suprimir o WARNING com traceback de CancelledError que o
+        # python-telegram-bot v20 emite durante o shutdown normal.
+        _lib_logger = logging.getLogger("telegram.ext._application")
+        _saved_level = _lib_logger.level
+        _lib_logger.setLevel(logging.CRITICAL)
         try:
             await self.app.updater.stop()
         except Exception:
             pass
         try:
             await self.app.stop()
-        except asyncio.CancelledError:
-            # python-telegram-bot v20 re-levanta CancelledError do update_fetcher
-            # durante o shutdown — comportamento normal, não é um erro real
+        except Exception:
             pass
+        finally:
+            _lib_logger.setLevel(_saved_level)
         try:
             await self.app.shutdown()
         except Exception:
