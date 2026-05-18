@@ -12,6 +12,19 @@ from state import StateManager
 from telegram_handler import TelegramHandler
 
 
+class _SuppressTelegramCancelledError(logging.Filter):
+    """Descarta o WARNING com traceback que python-telegram-bot emite ao encerrar.
+
+    A biblioteca chama logger.warning(..., exc_info=CancelledError) dentro de
+    Application.stop() durante o shutdown normal. O erro é benigno e já é
+    suprimido pela própria biblioteca; o filtro evita o traceback nos logs.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info and isinstance(record.exc_info[1], asyncio.CancelledError):
+            return False
+        return True
+
+
 def setup_logging() -> logging.Logger:
     logger = logging.getLogger("bot")
     logger.setLevel(logging.DEBUG)
@@ -31,6 +44,10 @@ def setup_logging() -> logging.Logger:
 
     logger.addHandler(console)
     logger.addHandler(file_h)
+
+    # Suprime traceback de CancelledError do shutdown do python-telegram-bot
+    logging.getLogger("telegram").addFilter(_SuppressTelegramCancelledError())
+
     return logger
 
 
