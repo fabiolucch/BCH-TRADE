@@ -150,13 +150,17 @@ class DCAEngine:
         balance = await self.exchange.get_balance(quote)
 
         if balance < cfg["order_size_usdt"]:
-            msg = (
-                f"⚠️ Saldo insuficiente para DCA #{order_num} em *{pair}*\n"
-                f"├ Disponível: `{balance:.2f} {quote}`\n"
-                f"└ Necessário: `{cfg['order_size_usdt']:.2f} {quote}`"
+            logger.warning(
+                f"[{pair}] Saldo insuficiente: {balance:.2f} {quote} < "
+                f"{cfg['order_size_usdt']:.2f} {quote}"
             )
-            logger.warning(msg.replace("*", "").replace("`", ""))
-            await self.notify(msg)
+            # _check_capital() já enviou alerta por quote currency — não duplicar
+            if not self._low_balance_alerts.get(quote, False):
+                await self.notify(
+                    f"⚠️ Saldo insuficiente para DCA #{order_num} em *{pair}*\n"
+                    f"├ Disponível: `{balance:.2f} {quote}`\n"
+                    f"└ Necessário: `{cfg['order_size_usdt']:.2f} {quote}`"
+                )
             return
 
         qty = self.exchange.amount_to_precision(pair, cfg["order_size_usdt"] / price)
@@ -246,18 +250,34 @@ class DCAEngine:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _extract_fee(order: dict, quote: str, ref_price: float, fallback: float) -> float:
-    """Extrai taxa em USDT do retorno da ordem, convertendo se necessário.
+    """Extrai taxa em quote currency do retorno da ordem.
 
-    OKX retorna fee como dict {"cost": valor, "currency": moeda}.
+    ccxt pode retornar:
+      - order["fee"]  → dict  {"cost": N, "currency": "USDT"}   (forma singular)
+      - order["fees"] → list  [{"cost": N, "currency": "USDT"}] (forma plural / OKX multi-leg)
+
     Se a moeda da taxa for a base (ex: BTC), converte para quote usando ref_price.
-    Usa `fallback` se a ordem não retornar fee.
+    Usa `fallback` se a ordem não retornar nenhuma taxa.
     """
-    fee_info = order.get("fee") or {}
+    # Tenta forma singular primeiro
+    fee_info = order.get("fee")
     if not isinstance(fee_info, dict) or not fee_info.get("cost"):
+        # Tenta forma plural: soma todas as taxas em quote equivalente
+        fees_list = order.get("fees")
+        if isinstance(fees_list, list) and fees_list:
+            total = 0.0
+            for f in fees_list:
+                if not isinstance(f, dict) or not f.get("cost"):
+                    continue
+                c = abs(float(f["cost"]))
+                if f.get("currency", quote) != quote:
+                    c *= ref_price
+                total += c
+            return total if total > 0 else fallback
         return fallback
+
     cost     = float(fee_info["cost"])
     currency = fee_info.get("currency", quote)
     if currency != quote:
-        # Fee em moeda base → converte para quote
         return abs(cost) * ref_price
     return abs(cost)

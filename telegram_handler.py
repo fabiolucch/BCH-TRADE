@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from bot_config import CONFIG_FIELDS, BotConfig
-from config import FEE_RATE, PAIRS, TAKE_PROFIT_PCT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN, DAILY_REPORT_TIME
+from config import FEE_RATE, PAIRS, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN, DAILY_REPORT_TIME
 from strategies import PRESETS
 
 if TYPE_CHECKING:
