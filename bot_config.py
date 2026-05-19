@@ -42,7 +42,7 @@ _DEFAULTS: dict = {
     "rsi_period"            : RSI_PERIOD,
     "bot_running"           : False,          # inicia parado; usuario ativa pelo Telegram
     "active_pairs"          : list(PAIRS),    # subconjunto de todos os pares ativos
-    "extra_pairs"           : [],             # pares adicionados via Telegram (fora do .env)
+    "extra_pairs"           : list(PAIRS),    # todos os pares gerenciados — inicializado com .env
 }
 
 # Metadados dos campos configuráveis pelo usuário
@@ -72,14 +72,17 @@ class BotConfig:
                     saved = json.load(f)
                 merged = deepcopy(_DEFAULTS)
                 merged.update(saved)
-                # extra_pairs = pares adicionados via Telegram fora do .env
-                extra = [p for p in merged.get("extra_pairs", []) if p not in PAIRS]
-                merged["extra_pairs"] = extra
-                all_pairs = list(PAIRS) + extra
-                # active_pairs deve ser subconjunto de todos os pares conhecidos
+                # extra_pairs contém TODOS os pares gerenciados.
+                # Garante que novos pares adicionados ao .env sejam incluídos automaticamente.
+                extra = merged.get("extra_pairs", [])
+                for p in PAIRS:
+                    if p not in extra:
+                        extra.append(p)
+                merged["extra_pairs"] = extra or list(PAIRS)
+                all_pairs = merged["extra_pairs"]
                 merged["active_pairs"] = [
                     p for p in merged.get("active_pairs", all_pairs) if p in all_pairs
-                ] or all_pairs
+                ] or list(all_pairs)
                 logger.info(
                     f"Configuração carregada: estratégia='{merged['strategy']}' | "
                     f"bot={'rodando' if merged['bot_running'] else 'parado'}"
@@ -147,9 +150,8 @@ class BotConfig:
         self._save()
 
     def get_all_pairs(self) -> list[str]:
-        """Retorna PAIRS do .env + pares extras adicionados via Telegram (ordem estável)."""
-        extra = [p for p in self._cfg.get("extra_pairs", []) if p not in PAIRS]
-        return list(PAIRS) + extra
+        """Retorna todos os pares gerenciados (extra_pairs unificado)."""
+        return list(self._cfg.get("extra_pairs", PAIRS))
 
     def set_active_pairs(self, pairs: list[str]) -> None:
         all_pairs = self.get_all_pairs()
@@ -166,21 +168,24 @@ class BotConfig:
         symbol = symbol.upper().strip()
         if "/" not in symbol or len(symbol.split("/")) != 2:
             return False, "Formato inválido. Use: `SOL/USDT`"
-        if symbol in PAIRS:
-            return False, f"`{symbol}` já está nos pares do `.env`."
-        extra = self._cfg.get("extra_pairs", [])
+        extra = self._cfg.get("extra_pairs", list(PAIRS))
         if symbol in extra:
-            return False, f"`{symbol}` já foi adicionado."
+            return False, f"`{symbol}` já está na lista de pares."
         extra.append(symbol)
         self._cfg["extra_pairs"] = extra
-        active = self._cfg.get("active_pairs", list(PAIRS))
+        active = self._cfg.get("active_pairs", list(extra))
         if symbol not in active:
             active.append(symbol)
         self._cfg["active_pairs"] = active
         self._save()
         return True, f"✅ Par `{symbol}` adicionado e ativado."
 
-    def remove_extra_pair(self, symbol: str) -> None:
-        self._cfg["extra_pairs"] = [p for p in self._cfg.get("extra_pairs", []) if p != symbol]
-        self._cfg["active_pairs"] = [p for p in self._cfg.get("active_pairs", []) if p != symbol]
+    def remove_extra_pair(self, symbol: str) -> tuple[bool, str]:
+        extra = [p for p in self._cfg.get("extra_pairs", []) if p != symbol]
+        if not extra:
+            return False, "⚠️ Não é possível remover o único par do sistema."
+        self._cfg["extra_pairs"] = extra
+        active = [p for p in self._cfg.get("active_pairs", []) if p != symbol]
+        self._cfg["active_pairs"] = active or [extra[0]]
         self._save()
+        return True, f"Par `{symbol}` removido."

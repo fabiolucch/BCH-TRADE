@@ -103,16 +103,17 @@ class TelegramHandler:
 
     def _build_main_menu(self) -> tuple[str, InlineKeyboardMarkup]:
         cfg            = self.bot_config.get()
+        all_pairs      = self.bot_config.get_all_pairs()
         strategy_label = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
-        open_pos       = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
-        active_pairs   = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS] or list(PAIRS)
+        open_pos       = [p for p in all_pairs if self.state.get_position(p)["is_active"]]
+        active_pairs   = [p for p in cfg.get("active_pairs", all_pairs) if p in all_pairs] or all_pairs
         running        = cfg.get("bot_running", False)
 
         text = (
             "🤖 *DCA Trading Bot*\n\n"
             f"{'🟢' if running else '🔴'} Status: *{'Rodando' if running else 'Parado'}*\n"
             f"📌 Estratégia: *{strategy_label}*\n"
-            f"📊 Posições abertas: *{len(open_pos)}* de *{len(PAIRS)}*\n"
+            f"📊 Posições abertas: *{len(open_pos)}* de *{len(all_pairs)}*\n"
             f"🔁 Pares ativos: `{', '.join(active_pairs)}`"
         )
         toggle_label = "⏹ Parar Bot" if running else "▶️ Iniciar Bot"
@@ -128,23 +129,22 @@ class TelegramHandler:
 
     def _build_pairs_menu(self) -> tuple[str, InlineKeyboardMarkup]:
         cfg       = self.bot_config.get()
-        active    = set(cfg.get("active_pairs", PAIRS))
-        extra     = set(cfg.get("extra_pairs", []))
+        active    = set(cfg.get("active_pairs", []))
         all_pairs = self.bot_config.get_all_pairs()
         text = (
             "📍 *Pares Ativos*\n\n"
-            "Toque para ativar/desativar um par.\n"
-            "🗑️ = par adicionado via Telegram (pode remover).\n"
+            "✅/❌ Ativa ou desativa o par.\n"
+            "🗑️ Remove o par do bot.\n"
             "_Posições abertas continuam sendo gerenciadas._"
         )
         rows = []
         for p in all_pairs:
             safe = p.replace("/", "_")
             icon = "✅" if p in active else "❌"
-            row  = [_btn(f"{icon} {p}", f"pair_toggle:{safe}")]
-            if p in extra:
-                row.append(_btn("🗑️", f"pair_remove:{safe}"))
-            rows.append(row)
+            rows.append([
+                _btn(f"{icon} {p}", f"pair_toggle:{safe}"),
+                _btn("🗑️", f"pair_remove:{safe}"),
+            ])
         rows.append([_btn("➕ Adicionar par", "pair_add"), _btn("◀️ Voltar", "nav:main")])
         return text, _kb(*rows)
 
@@ -394,8 +394,11 @@ class TelegramHandler:
             return
 
         elif action == "pair_remove":
-            pair = param.replace("_", "/")
-            self.bot_config.remove_extra_pair(pair)
+            pair    = param.replace("_", "/")
+            ok, msg = self.bot_config.remove_extra_pair(pair)
+            if not ok:
+                await query.answer(msg, show_alert=True)
+                return
             await query.answer(f"Par {pair} removido.", show_alert=False)
             text, kb = self._build_pairs_menu()
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
