@@ -5,7 +5,7 @@ import signal
 import sys
 
 from bot_config import BotConfig
-from config import CHECK_INTERVAL, LOG_FILE, PAIRS, TESTNET
+from config import CHECK_INTERVAL, LOG_FILE, TESTNET
 from dca import DCAEngine
 from exchange import ExchangeClient
 from state import StateManager
@@ -49,7 +49,6 @@ async def main() -> None:
     logger.info("═" * 60)
     logger.info("  DCA Trading Bot — Iniciando")
     logger.info(f"  Modo     : {'⚠  PRODUÇÃO (dinheiro real)' if not TESTNET else 'DEMO'}")
-    logger.info(f"  Pares    : {', '.join(PAIRS)}")
     logger.info(f"  Intervalo: {CHECK_INTERVAL}s")
     logger.info("═" * 60)
 
@@ -68,12 +67,16 @@ async def main() -> None:
 
     # ── Inicia Telegram antes do loop ─────────────────────────────────────────
     await telegram.start()
+    all_pairs  = bot_config.get_all_pairs()
     running    = bot_config.get()["bot_running"]
     status_txt = "🟢 Rodando" if running else "🔴 Parado — use /menu → ▶️ Iniciar Bot"
+
+    logger.info(f"  Pares    : {', '.join(all_pairs)}")
+
     await telegram.send(
         f"🤖 *DCA Bot iniciado*\n"
         f"Modo: `{'DEMO' if TESTNET else 'PRODUÇÃO'}`\n"
-        f"Pares: `{', '.join(PAIRS)}`\n"
+        f"Pares: `{', '.join(all_pairs)}`\n"
         f"Intervalo: `{CHECK_INTERVAL}s`\n"
         f"Status: {status_txt}"
     )

@@ -276,7 +276,7 @@ class TelegramHandler:
         return text, kb
 
     def _build_close_menu(self) -> tuple[str, InlineKeyboardMarkup]:
-        active = [p for p in PAIRS if self.state.get_position(p)["is_active"]]
+        active = [p for p in self.bot_config.get_all_pairs() if self.state.get_position(p)["is_active"]]
         if not active:
             text = "ℹ️ Nenhuma posição aberta no momento."
             kb   = _kb([_btn("◀️ Voltar", "nav:main")])
@@ -353,7 +353,7 @@ class TelegramHandler:
                 new_val = not cfg.get("bot_running", False)
                 self.bot_config.set_running(new_val)
                 if new_val:
-                    active = [p for p in cfg.get("active_pairs", PAIRS) if p in PAIRS] or list(PAIRS)
+                    active = self.bot_config.get_all_pairs()
                     strat  = PRESETS.get(cfg["strategy"], {}).get("name", "Personalizado")
                     await self.send(
                         f"▶️ *Bot iniciado*\n"
