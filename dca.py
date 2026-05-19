@@ -1,6 +1,7 @@
 """dca.py — Motor de lógica DCA com Trailing Stop e gestão de capital."""
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from typing import Awaitable, Callable
 
@@ -30,6 +31,9 @@ class DCAEngine:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Rastreia se já foi emitido alerta de saldo baixo por moeda de quote
         self._low_balance_alerts: dict[str, bool] = {}
+        # Controle de falhas de venda: evita spam e pausa após tentativas consecutivas
+        self._sell_failures: dict[str, int]   = {}
+        self._sell_blocked:  dict[str, float] = {}  # pair → timestamp de desbloqueio
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
@@ -128,6 +132,13 @@ class DCAEngine:
 
     async def _evaluate_open_position(self, pair: str, price: float, pos: dict) -> None:
         cfg = self.bot_config.get()
+
+        # ── Verifica bloqueio temporário de venda (após falhas repetidas) ─────
+        blocked_until = self._sell_blocked.get(pair, 0.0)
+        if time.time() < blocked_until:
+            remaining = int((blocked_until - time.time()) / 60) + 1
+            logger.debug(f"[{pair}] Venda bloqueada por falhas repetidas. Aguardando ~{remaining}min.")
+            return
 
         # ── Trailing Stop ativo ───────────────────────────────────────────────
         if pos["trailing_active"]:
@@ -248,11 +259,55 @@ class DCAEngine:
 
     async def _sell(self, pair: str, pos: dict, price: float, reason: str) -> None:
         quote = pair.split("/")[1]
-        order = await self.exchange.market_sell(pair, pos["total_qty"])
+        base  = pair.split("/")[0]
+
+        # Busca saldo real para evitar erro 51008 (OKX às vezes cobra taxa em base currency,
+        # reduzindo o saldo abaixo do total_qty gravado no state)
+        try:
+            actual_balance = await self.exchange.get_balance(base)
+            sell_qty = self.exchange.amount_to_precision(
+                pair, min(pos["total_qty"], actual_balance)
+            )
+        except Exception:
+            sell_qty = self.exchange.amount_to_precision(pair, pos["total_qty"])
+
+        if float(sell_qty) <= 0:
+            msg = (
+                f"🚨 *Erro crítico — {pair}*\n"
+                f"Quantidade calculada para venda é zero.\n"
+                f"Verifique o saldo de `{base}` na OKX manualmente."
+            )
+            logger.error(msg.replace("*", "").replace("`", ""))
+            await self.notify(msg)
+            return
+
+        order = await self.exchange.market_sell(pair, sell_qty)
 
         if order is None:
-            await self.notify(f"❌ Falha ao executar venda ({reason}) em *{pair}*")
+            failures = self._sell_failures.get(pair, 0) + 1
+            self._sell_failures[pair] = failures
+            if failures >= 3:
+                # Pausa tentativas por 10 minutos e envia alerta crítico
+                self._sell_blocked[pair] = time.time() + 600
+                msg = (
+                    f"🚨 *ALERTA CRÍTICO — {pair}*\n"
+                    f"Falha ao vender após *{failures} tentativas* ({reason}).\n"
+                    f"├ Qty tentada: `{sell_qty} {base}`\n"
+                    f"├ *Intervenção manual pode ser necessária!*\n"
+                    f"└ Bot pausará novas tentativas por 10 minutos."
+                )
+            else:
+                msg = (
+                    f"❌ Falha ao executar venda ({reason}) em *{pair}* "
+                    f"(tentativa {failures}/3)"
+                )
+            logger.error(msg.replace("*", "").replace("`", ""))
+            await self.notify(msg)
             return
+
+        # Venda bem-sucedida — reseta contadores
+        self._sell_failures.pop(pair, None)
+        self._sell_blocked.pop(pair, None)
 
         exit_px      = float(order.get("average") or order.get("price") or price)
         gross_rev    = exit_px * pos["total_qty"]
@@ -291,11 +346,14 @@ class DCAEngine:
     # ── Comando manual ────────────────────────────────────────────────────────
 
     async def force_close(self, pair: str) -> str:
-        """Fecha posição a mercado via comando Telegram."""
+        """Fecha posição a mercado via comando Telegram. Reseta bloqueio de venda."""
         async with self._locks[pair]:
             pos = self.state.get_position(pair)
             if not pos["is_active"]:
                 return f"ℹ️ *{pair}* não tem posição aberta."
+            # Fechamento manual sempre tenta, ignorando bloqueio temporário
+            self._sell_blocked.pop(pair, None)
+            self._sell_failures.pop(pair, None)
             price = await self.exchange.get_price(pair)
             await self._sell(pair, pos, price, reason="Fechamento Manual")
             return f"✅ Posição *{pair}* encerrada a mercado."
