@@ -437,6 +437,45 @@ class TelegramHandler:
             self._awaiting[query.message.chat_id] = (param, msg.message_id)
 
         elif action == "close":
+            # Mostra confirmação com PnL atual antes de executar
+            pair = param.replace("_", "/")
+            pos  = self.state.get_position(pair)
+            if not pos["is_active"]:
+                await query.edit_message_text(
+                    f"ℹ️ *{pair}* não tem posição aberta.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=_kb([_btn("◀️ Voltar", "nav:close_menu")]),
+                )
+                return
+            try:
+                price   = await self.engine.exchange.get_price(pair)
+                gross   = (price - pos["avg_price"]) * pos["total_qty"]
+                pnl_pct = (price / pos["avg_price"] - 1) * 100
+                quote   = pair.split("/")[1]
+                emoji   = "🟢" if gross >= 0 else "🔴"
+                text = (
+                    f"⚠️ *Confirmar fechamento — {pair}*\n\n"
+                    f"├ Aportes: `{pos['order_count']}` | Qty: `{pos['total_qty']:.6f}`\n"
+                    f"├ Preço médio: `{pos['avg_price']:.4f}`\n"
+                    f"├ Preço atual: `{price:.4f}`\n"
+                    f"├ PnL bruto est.: {emoji} `{gross:+.2f} {quote}` ({pnl_pct:+.2f}%)\n\n"
+                    f"_A venda será executada a mercado. Confirmar?_"
+                )
+            except Exception:
+                text = (
+                    f"⚠️ *Confirmar fechamento — {pair}*\n\n"
+                    f"_A venda será executada a mercado. Confirmar?_"
+                )
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_kb(
+                    [_btn("✅ Fechar agora", f"close_exec:{param}"),
+                     _btn("❌ Cancelar",     "nav:close_menu")],
+                ),
+            )
+
+        elif action == "close_exec":
             pair = param.replace("_", "/")
             await query.edit_message_text(
                 f"⏳ Fechando *{pair}* a mercado…", parse_mode=ParseMode.MARKDOWN
@@ -567,12 +606,17 @@ class TelegramHandler:
                 lines.append(f"• {pair}: ⚠️ {exc}")
 
         text = "\n".join(lines)
-        kb   = _kb([_btn("🔄 Atualizar", "nav:status"), _btn("◀️ Menu", "nav:main")])
+
+        btn_rows = [[_btn("🔄 Atualizar", "nav:status"), _btn("◀️ Menu", "nav:main")]]
+        for p in all_pairs:
+            if self.state.get_position(p)["is_active"]:
+                btn_rows.append([_btn(f"🔴 Fechar {p}", f"close:{p.replace('/', '_')}")])
+        kb = _kb(*btn_rows)
 
         if query:
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         elif message:
-            await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     # ── Relatório PnL ─────────────────────────────────────────────────────────
 
