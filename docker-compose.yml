@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  swing_bot:
+    build: .
+    container_name: okx_swing_bot
+    restart: unless-stopped
+    volumes:
+      - .:/app
