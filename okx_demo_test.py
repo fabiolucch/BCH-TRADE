@@ -5,7 +5,7 @@ O que este script faz, em ordem:
   1. Autentica via HMAC-SHA256 com header x-simulated-trading: 1
   2. Consulta o saldo da conta demo
   3. Se não houver USDC nem USDT utilizáveis, credita 5000 USDT via endpoint demo
-  4. Envia uma ordem de compra a mercado de teste no par BTC-USDC (tdMode=cash)
+  4. Envia uma ordem de compra a mercado de teste no par BCH-USDT (tdMode=cash)
 
 Não depende do ccxt — usa apenas `requests` para controle total dos headers.
 
@@ -40,11 +40,11 @@ BASE_URL   = "https://www.okx.com"      # mesmo domínio para demo e produção
 DEMO_HEADER = {"x-simulated-trading": "1"}
 
 # Par e parâmetros da ordem de teste
-TEST_SYMBOL  = "BTC-USDC"               # instId no formato OKX
+TEST_SYMBOL  = "BCH-USDT"               # instId no formato OKX — mesmo par do bot
 ORDER_SIDE   = "buy"
 ORDER_TYPE   = "market"
 TD_MODE      = "cash"                   # spot/cash no modo demo
-ORDER_SIZE   = "0.0001"                 # quantidade mínima de BTC para teste
+ORDER_SIZE   = "0.01"                   # mínimo de BCH aceito pela OKX (≈ $5)
 
 # Moedas aceitas pelo endpoint de ajuste de saldo demo
 DEMO_SUPPORTED_CCY = {"BTC", "ETH", "USDT", "OKB"}
@@ -239,7 +239,8 @@ def enviar_ordem_teste(
         "tdMode" : TD_MODE,         # "cash" para spot
         "side"   : side,
         "ordType": ORDER_TYPE,      # "market"
-        "sz"     : sz,              # quantidade em moeda base (BTC)
+        "sz"     : sz,              # quantidade em moeda base (BCH)
+        "tgtCcy" : "base_ccy",      # sz refere-se à moeda base, não à cotação
     }
     body = json.dumps(payload)
 
@@ -247,7 +248,7 @@ def enviar_ordem_teste(
     print(f"   Par    : {instId}")
     print(f"   Lado   : {side.upper()}")
     print(f"   Tipo   : {ORDER_TYPE} | tdMode={TD_MODE}")
-    print(f"   Qtd    : {sz} BTC")
+    print(f"   Qtd    : {sz} BCH")
 
     try:
         resp = requests.post(
@@ -279,6 +280,7 @@ def enviar_ordem_teste(
                 "51008": "Saldo insuficiente para esta ordem.",
                 "51000": "Parâmetros da ordem inválidos.",
                 "51001": "Instrumento (par) não encontrado ou inativo.",
+                "51020": "Valor da ordem abaixo do mínimo exigido pela OKX.",
                 "50102": "Timestamp fora do intervalo aceito (verifique o relógio do sistema).",
             }.get(sc, sm)
             print(f"   sCode={sc} → {descricao}")
@@ -307,6 +309,7 @@ def main():
     saldo_util = saldo_usdc + saldo_usdt
 
     print(f"\n   Saldo utilizável: USDC={saldo_usdc:.2f} | USDT={saldo_usdt:.2f} | Total≈{saldo_util:.2f}")
+    print(f"   Par de teste usa USDT — saldo de {saldo_usdt:.2f} USDT será usado.")
 
     # 4. Se saldo insuficiente (< 10 USDC/USDT), credita USDT no demo
     if saldo_util < 10.0:

@@ -28,7 +28,7 @@ TESTNET = os.getenv("TESTNET", "True").strip().lower() in ("true", "1", "yes")
 # ─────────────────────────────────────────────────────────────
 # Par e timeframes
 # ─────────────────────────────────────────────────────────────
-SYMBOL           = os.getenv("SYMBOL", "BCH/USDC")
+SYMBOL           = os.getenv("SYMBOL", "BCH/USDT")
 TIMEFRAME_TREND  = os.getenv("TIMEFRAME_TREND", "1d")  # Tendência principal
 TIMEFRAME_ENTRY  = os.getenv("TIMEFRAME_ENTRY", "4h")  # Gatilho de entrada
 
