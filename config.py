@@ -1,97 +1,66 @@
-"""
-config.py — Carrega variáveis de ambiente e instancia a exchange via ccxt.
-
-Todas as configurações da estratégia e da conexão são centralizadas aqui.
-Para alterar parâmetros, edite o arquivo .env (nunca hardcode credenciais).
-"""
-
-import logging
+"""config.py — Todas as configurações carregadas via variáveis de ambiente."""
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-import ccxt
 
-# Carrega .env antes de qualquer leitura de os.getenv
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────────
-# Credenciais e conexão
-# ─────────────────────────────────────────────────────────────
+# ── Exchange ──────────────────────────────────────────────────────────────────
 EXCHANGE_ID    = os.getenv("EXCHANGE_ID", "okx")
 API_KEY        = os.getenv("API_KEY", "")
 API_SECRET     = os.getenv("API_SECRET", "")
-API_PASSPHRASE = os.getenv("API_PASSPHRASE", "")  # Obrigatório na OKX
+API_PASSPHRASE = os.getenv("API_PASSPHRASE", "")
+TESTNET        = os.getenv("TESTNET", "False").strip().lower() in ("true", "1", "yes")
 
-# True  → modo demo/testnet (OKX Paper Trading)
-# False → dinheiro real
-TESTNET = os.getenv("TESTNET", "True").strip().lower() in ("true", "1", "yes")
+# ── Pares monitorados ─────────────────────────────────────────────────────────
+# Ex: PAIRS=BTC/USDT,ETH/USDT,SOL/USDT
+PAIRS: list[str] = [
+    p.strip() for p in os.getenv("PAIRS", "BTC/USDT").split(",") if p.strip()
+]
 
-# ─────────────────────────────────────────────────────────────
-# Par e timeframes
-# ─────────────────────────────────────────────────────────────
-SYMBOL           = os.getenv("SYMBOL", "BCH/USDC")
-TIMEFRAME_TREND  = os.getenv("TIMEFRAME_TREND", "1d")  # Tendência principal
-TIMEFRAME_ENTRY  = os.getenv("TIMEFRAME_ENTRY", "4h")  # Gatilho de entrada
+# ── Parâmetros DCA ────────────────────────────────────────────────────────────
+DCA_DROP_PCT    = float(os.getenv("DCA_DROP_PCT", "3.0"))     # % de queda para nova entrada
+ORDER_SIZE_USDT = float(os.getenv("ORDER_SIZE_USDT", "20.0")) # valor em quote por aporte
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "1.5"))  # % acima do preço médio para vender
+MAX_DCA_ORDERS    = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de aportes por par
+MARTINGALE_LEVELS = int(os.getenv("MARTINGALE_LEVELS", "0"))   # 0=off; 1-3 níveis de dobra linear
+REENTRY_DROP_PCT  = float(os.getenv("REENTRY_DROP_PCT", "1.5")) # % abaixo do preço de saída para re-entrada (0=desativado)
 
-# ─────────────────────────────────────────────────────────────
-# Gerenciamento de risco
-# ─────────────────────────────────────────────────────────────
-RISK_PCT      = float(os.getenv("RISK_PCT", "1.5"))    # % do saldo por operação
-RR_RATIO      = float(os.getenv("RR_RATIO", "2.0"))    # Risco:Retorno
-SL_CANDLES    = int(os.getenv("SL_CANDLES", "5"))      # Candles para mínima do SL
-SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "1.0"))  # % abaixo da mínima
+# ── Stop Loss absoluto (Elder) ────────────────────────────────────────────────
+STOP_LOSS_ENABLED = os.getenv("STOP_LOSS_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+STOP_LOSS_PCT     = float(os.getenv("STOP_LOSS_PCT", "15.0"))  # % de queda máxima aceita
 
-# ─────────────────────────────────────────────────────────────
-# Parâmetros do RSI
-# ─────────────────────────────────────────────────────────────
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "30.0"))
-RSI_LOOKBACK = int(os.getenv("RSI_LOOKBACK", "3"))
+# ── Filtro de Tendência EMA (Elder) ──────────────────────────────────────────
+TREND_FILTER_ENABLED = os.getenv("TREND_FILTER_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+TREND_EMA_PERIOD     = int(os.getenv("TREND_EMA_PERIOD", "21"))  # períodos diários
 
-# ─────────────────────────────────────────────────────────────
-# Operacional
-# ─────────────────────────────────────────────────────────────
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))    # segundos
-OHLCV_LIMIT    = int(os.getenv("OHLCV_LIMIT", "200"))       # candles históricos
-STATE_FILE     = os.getenv("STATE_FILE", "position_state.json")
-LOG_FILE       = os.getenv("LOG_FILE", "bot_trade.log")
+# ── Circuit Breaker (Elder) ───────────────────────────────────────────────────
+CIRCUIT_BREAKER_ENABLED = os.getenv("CIRCUIT_BREAKER_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+CIRCUIT_BREAKER_PCT     = float(os.getenv("CIRCUIT_BREAKER_PCT", "10.0"))  # % drawdown total para pausar
 
+# ── Filtro RSI ────────────────────────────────────────────────────────────────
+RSI_ENABLED   = os.getenv("RSI_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+RSI_THRESHOLD = float(os.getenv("RSI_THRESHOLD", "45.0"))  # só entra se RSI < threshold
+RSI_PERIOD    = int(os.getenv("RSI_PERIOD", "14"))          # período padrão do RSI
 
-def create_exchange() -> ccxt.Exchange:
-    """
-    Cria e retorna a instância configurada da exchange.
+# ── Trailing Stop (padrão inicial; ajustável via Telegram) ───────────────────
+TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+TRAILING_STOP_PCT     = float(os.getenv("TRAILING_STOP_PCT", "1.0"))  # % abaixo do pico para vender
 
-    - Usa ccxt para suportar OKX (e opcionalmente Binance).
-    - Ativa sandbox/demo automaticamente quando TESTNET=True.
-    - A OKX exige o campo 'password' (passphrase da API key).
-    """
-    if EXCHANGE_ID not in ccxt.exchanges:
-        raise ValueError(
-            f"Exchange '{EXCHANGE_ID}' não encontrada no ccxt. "
-            f"Verifique o valor de EXCHANGE_ID no .env."
-        )
+# ── Taxa da corretora ─────────────────────────────────────────────────────────
+# OKX spot taker: 0.1% (0.001). Usado para PnL preciso quando a exchange
+# não retorna o campo fee na resposta da ordem.
+FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
 
-    exchange_class = getattr(ccxt, EXCHANGE_ID)
+# ── Operacional ───────────────────────────────────────────────────────────────
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))        # segundos entre ciclos
+STATE_FILE     = Path(os.getenv("STATE_FILE", "state.json"))
+LOG_FILE       = Path(os.getenv("LOG_FILE", "dca_bot.log"))
 
-    config = {
-        "apiKey"         : API_KEY,
-        "secret"         : API_SECRET,
-        "password"       : API_PASSPHRASE,  # 'password' é o campo ccxt para passphrase OKX
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "spot",          # Garante operações no mercado spot
-        },
-    }
-
-    exchange = exchange_class(config)
-
-    if TESTNET:
-        # OKX Demo Trading: set_sandbox_mode ajusta as URLs automaticamente
-        exchange.set_sandbox_mode(True)
-        logging.getLogger("bot").info(
-            "Modo TESTNET ativado — operações no ambiente de simulação (OKX Demo Trading)."
-        )
-    else:
-        logging.getLogger("bot").warning(
-            "Modo PRODUÇÃO ativado — operações com dinheiro real!"
-        )
-
-    return exchange
+# ── Telegram ──────────────────────────────────────────────────────────────────
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+DAILY_REPORT_TIME = os.getenv("DAILY_REPORT_TIME", "00:00")    # HH:MM UTC
+# Garante formato válido mesmo se .env tiver valor vazio ou comentário inline
+if ":" not in DAILY_REPORT_TIME:
+    DAILY_REPORT_TIME = "00:00"
