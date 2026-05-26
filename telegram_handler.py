@@ -172,6 +172,24 @@ class TelegramHandler:
             if rsi_on else
             "📊 Filtro RSI: `OFF`\n"
         )
+        sl_on   = cfg.get("stop_loss_enabled", False)
+        sl_icon = "✅" if sl_on else "❌"
+        sl_line = (
+            f"🛑 Stop Loss: `ON` — fecha se cair `{cfg.get('stop_loss_pct', 15.0)}%` do avg\n"
+            if sl_on else "🛑 Stop Loss: `OFF`\n"
+        )
+        tf_on   = cfg.get("trend_filter_enabled", False)
+        tf_icon = "✅" if tf_on else "❌"
+        tf_line = (
+            f"🔍 Filtro EMA: `ON` — entra só acima da EMA`{cfg.get('trend_ema_period', 21)}` diária\n"
+            if tf_on else "🔍 Filtro EMA: `OFF`\n"
+        )
+        cb_on   = cfg.get("circuit_breaker_enabled", False)
+        cb_icon = "✅" if cb_on else "❌"
+        cb_line = (
+            f"⚡ Circuit Breaker: `ON` — pausa entradas se drawdown ≥ `{cfg.get('circuit_breaker_pct', 10.0)}%`\n"
+            if cb_on else "⚡ Circuit Breaker: `OFF`\n"
+        )
         text = (
             "⚙️ *Configurações*\n\n"
             f"📌 Estratégia atual: *{strategy_label}*\n"
@@ -183,13 +201,19 @@ class TelegramHandler:
             f"{trail_icon} Trailing Stop: `{'ON' if cfg['trailing_stop_enabled'] else 'OFF'}`"
             + (f" — `{cfg['trailing_stop_pct']}%`\n" if cfg["trailing_stop_enabled"] else "\n")
             + reentry_line
-            + rsi_line.rstrip("\n")
+            + rsi_line
+            + sl_line
+            + tf_line
+            + cb_line.rstrip("\n")
         )
         kb = _kb(
             [_btn("📋 Estratégias Prontas",  "nav:strategies"),
              _btn("🔧 Personalizar",         "nav:custom")],
-            [_btn(f"{trail_icon} Trailing Stop", "toggle:trailing"),
-             _btn(f"{rsi_icon} Filtro RSI",      "toggle:rsi")],
+            [_btn(f"{trail_icon} Trailing Stop",   "toggle:trailing"),
+             _btn(f"{rsi_icon} Filtro RSI",        "toggle:rsi")],
+            [_btn(f"{sl_icon} Stop Loss",          "toggle:stop_loss"),
+             _btn(f"{tf_icon} Filtro EMA",         "toggle:trend_filter")],
+            [_btn(f"{cb_icon} Circuit Breaker",    "toggle:circuit_breaker")],
             [_btn("◀️ Voltar",               "nav:main")],
         )
         return text, kb
@@ -213,6 +237,16 @@ class TelegramHandler:
             mart_line = f"🎲 Martingale: `{levels} níveis` ({sizes_str} USDT)\n"
         else:
             mart_line = "🎲 Martingale: `OFF`\n"
+        elder_lines = ""
+        if p.get("stop_loss_enabled"):
+            elder_lines += f"\n🛑 Stop Loss: `{p.get('stop_loss_pct', 15)}%`"
+        if p.get("trend_filter_enabled"):
+            elder_lines += f"\n🔍 Filtro EMA: `EMA{p.get('trend_ema_period', 21)}` diário"
+        if p.get("circuit_breaker_enabled"):
+            elder_lines += f"\n⚡ Circuit Breaker: `{p.get('circuit_breaker_pct', 10)}%`"
+        if p.get("rsi_enabled"):
+            elder_lines += f"\n📊 RSI < `{p.get('rsi_threshold', 45)}` (período `{p.get('rsi_period', 14)}`)"
+
         text = (
             f"{p['emoji']} *{p['name']}*\n\n"
             f"_{p['description']}_\n\n"
@@ -223,6 +257,7 @@ class TelegramHandler:
             f"{mart_line}"
             f"📈 Trailing Stop: {trail}"
             + (f" (`{p['trailing_stop_pct']}%`)" if p["trailing_stop_enabled"] else "")
+            + elder_lines
         )
         active = cfg["strategy"] == key
         kb = _kb(
@@ -249,6 +284,13 @@ class TelegramHandler:
             f"`{cfg.get('rsi_threshold', 45.0)}` (período `{cfg.get('rsi_period', 14)}`)"
             if rsi_on else "`OFF`"
         )
+        sl_on  = cfg.get("stop_loss_enabled", False)
+        sl_val = f"`{cfg.get('stop_loss_pct', 15.0)}%`" if sl_on else "`OFF`"
+        tf_on  = cfg.get("trend_filter_enabled", False)
+        tf_val = f"EMA`{cfg.get('trend_ema_period', 21)}` diário" if tf_on else "`OFF`"
+        cb_on  = cfg.get("circuit_breaker_enabled", False)
+        cb_val = f"`{cfg.get('circuit_breaker_pct', 10.0)}%` drawdown" if cb_on else "`OFF`"
+
         text = (
             "🔧 *Configuração Personalizada*\n\n"
             "Toque em um parâmetro para alterar:\n\n"
@@ -259,7 +301,10 @@ class TelegramHandler:
             f"  🎲 Martingale: {mart_val}\n"
             f"  📈 Trailing Stop: `{cfg['trailing_stop_pct']}%`\n"
             f"  🔁 Re-entrada: {reentry_val}\n"
-            f"  📊 RSI threshold: {rsi_val}"
+            f"  📊 RSI threshold: {rsi_val}\n"
+            f"  🛑 Stop Loss: {sl_val}\n"
+            f"  🔍 Filtro EMA: {tf_val}\n"
+            f"  ⚡ Circuit Breaker: {cb_val}"
         )
         kb = _kb(
             [_btn("📉 Queda DCA",      "set:dca_drop_pct"),
@@ -270,7 +315,10 @@ class TelegramHandler:
              _btn("📈 Trailing %",     "set:trailing_stop_pct")],
             [_btn("🔁 Re-entrada %",   "set:reentry_drop_pct"),
              _btn("📊 RSI threshold",  "set:rsi_threshold")],
-            [_btn("🔢 Período RSI",    "set:rsi_period")],
+            [_btn("🔢 Período RSI",    "set:rsi_period"),
+             _btn("🛑 Stop Loss %",    "set:stop_loss_pct")],
+            [_btn("🔍 Período EMA",    "set:trend_ema_period"),
+             _btn("⚡ Circuit Breaker %", "set:circuit_breaker_pct")],
             [_btn("◀️ Voltar",         "nav:config")],
         )
         return text, kb
@@ -379,6 +427,27 @@ class TelegramHandler:
                 enabled = self.bot_config.toggle_rsi()
                 state_txt = "✅ ativado" if enabled else "❌ desativado"
                 await query.answer(f"Filtro RSI {state_txt}!", show_alert=True)
+                text, kb = self._build_config_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+            elif param == "stop_loss":
+                enabled = self.bot_config.toggle_stop_loss()
+                state_txt = "✅ ativado" if enabled else "❌ desativado"
+                await query.answer(f"Stop Loss {state_txt}!", show_alert=True)
+                text, kb = self._build_config_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+            elif param == "trend_filter":
+                enabled = self.bot_config.toggle_trend_filter()
+                state_txt = "✅ ativado" if enabled else "❌ desativado"
+                await query.answer(f"Filtro EMA {state_txt}!", show_alert=True)
+                text, kb = self._build_config_menu()
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+            elif param == "circuit_breaker":
+                enabled = self.bot_config.toggle_circuit_breaker()
+                state_txt = "✅ ativado" if enabled else "❌ desativado"
+                await query.answer(f"Circuit Breaker {state_txt}!", show_alert=True)
                 text, kb = self._build_config_menu()
                 await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 

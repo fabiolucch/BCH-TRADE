@@ -26,6 +26,18 @@ MAX_DCA_ORDERS    = int(os.getenv("MAX_DCA_ORDERS", "10"))       # máximo de ap
 MARTINGALE_LEVELS = int(os.getenv("MARTINGALE_LEVELS", "0"))   # 0=off; 1-3 níveis de dobra linear
 REENTRY_DROP_PCT  = float(os.getenv("REENTRY_DROP_PCT", "1.5")) # % abaixo do preço de saída para re-entrada (0=desativado)
 
+# ── Stop Loss absoluto (Elder) ────────────────────────────────────────────────
+STOP_LOSS_ENABLED = os.getenv("STOP_LOSS_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+STOP_LOSS_PCT     = float(os.getenv("STOP_LOSS_PCT", "15.0"))  # % de queda máxima aceita
+
+# ── Filtro de Tendência EMA (Elder) ──────────────────────────────────────────
+TREND_FILTER_ENABLED = os.getenv("TREND_FILTER_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+TREND_EMA_PERIOD     = int(os.getenv("TREND_EMA_PERIOD", "21"))  # períodos diários
+
+# ── Circuit Breaker (Elder) ───────────────────────────────────────────────────
+CIRCUIT_BREAKER_ENABLED = os.getenv("CIRCUIT_BREAKER_ENABLED", "False").strip().lower() in ("true", "1", "yes")
+CIRCUIT_BREAKER_PCT     = float(os.getenv("CIRCUIT_BREAKER_PCT", "10.0"))  # % drawdown total para pausar
+
 # ── Filtro RSI ────────────────────────────────────────────────────────────────
 RSI_ENABLED   = os.getenv("RSI_ENABLED", "False").strip().lower() in ("true", "1", "yes")
 RSI_THRESHOLD = float(os.getenv("RSI_THRESHOLD", "45.0"))  # só entra se RSI < threshold

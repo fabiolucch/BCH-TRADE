@@ -127,6 +127,17 @@ class ExchangeClient:
         return symbol in self._ex.markets
 
     @staticmethod
+    def calculate_ema(closes: list[float], period: int) -> float | None:
+        """EMA exponencial (suavização 2/(period+1)). Retorna None se dados insuficientes."""
+        if len(closes) < period:
+            return None
+        k   = 2.0 / (period + 1)
+        ema = sum(closes[:period]) / period
+        for price in closes[period:]:
+            ema = price * k + ema * (1 - k)
+        return ema
+
+    @staticmethod
     def calculate_rsi(closes: list[float], period: int = 14) -> float:
         """RSI de Wilder com suavização exponencial. Retorna valor 0–100.
 

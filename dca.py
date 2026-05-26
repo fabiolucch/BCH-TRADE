@@ -34,13 +34,23 @@ class DCAEngine:
         # Controle de falhas de venda: evita spam e pausa após tentativas consecutivas
         self._sell_failures: dict[str, int]   = {}
         self._sell_blocked:  dict[str, float] = {}  # pair → timestamp de desbloqueio
+        # Circuit Breaker (Elder): estado calculado uma vez por ciclo
+        self._circuit_breaker_active: bool = False
 
     # ── Loop principal ────────────────────────────────────────────────────────
 
     async def tick(self) -> None:
         """Processa todos os pares em sequência em cada ciclo."""
         all_pairs = self.bot_config.get_all_pairs()
+        cfg       = self.bot_config.get()
         await self._check_capital(all_pairs)
+
+        # Circuit Breaker (Elder): avalia drawdown total uma vez por ciclo
+        if cfg.get("circuit_breaker_enabled", False):
+            await self._update_circuit_breaker(cfg)
+        else:
+            self._circuit_breaker_active = False
+
         for pair in all_pairs:
             try:
                 await self._check_pair(pair)
@@ -119,6 +129,11 @@ class DCAEngine:
                                 f"limiar {threshold:.4f} (saída {last_exit:.4f} -{reentry_drop}%)"
                             )
                             return
+                    # Circuit Breaker (Elder): bloqueia novas posições se drawdown excessivo
+                    if self._circuit_breaker_active:
+                        logger.debug(f"[{pair}] Circuit breaker ativo. Nova entrada bloqueada.")
+                        return
+
                     # Filtro RSI: só entra se RSI < threshold
                     if cfg.get("rsi_enabled", False):
                         rsi = await self._get_rsi(pair, cfg)
@@ -128,6 +143,17 @@ class DCAEngine:
                                 f"{rsi:.1f} ≥ {cfg['rsi_threshold']:.0f}"
                             )
                             return
+
+                    # Filtro de tendência EMA (Elder): só entra se preço > EMA diária
+                    if cfg.get("trend_filter_enabled", False):
+                        ema = await self._get_trend_ema(pair, cfg)
+                        if ema is not None and price < ema:
+                            logger.debug(
+                                f"[{pair}] Entrada bloqueada por tendência: "
+                                f"preço {price:.4f} < EMA{cfg.get('trend_ema_period', 21)} {ema:.4f}"
+                            )
+                            return
+
                     await self._buy(pair, price, order_num=1)
 
     async def _evaluate_open_position(self, pair: str, price: float, pos: dict) -> None:
@@ -139,6 +165,20 @@ class DCAEngine:
             remaining = int((blocked_until - time.time()) / 60) + 1
             logger.debug(f"[{pair}] Venda bloqueada por falhas repetidas. Aguardando ~{remaining}min.")
             return
+
+        # ── Stop Loss absoluto (Elder) ────────────────────────────────────────
+        if cfg.get("stop_loss_enabled", False):
+            sl_pct   = cfg.get("stop_loss_pct", 15.0)
+            sl_price = pos["avg_price"] * (1 - sl_pct / 100)
+            if price <= sl_price:
+                drop = (pos["avg_price"] - price) / pos["avg_price"] * 100
+                await self.notify(
+                    f"🛑 *Stop Loss acionado — {pair}*\n"
+                    f"├ Queda desde avg: `{drop:.2f}%` (limite: `{sl_pct}%`)\n"
+                    f"└ Encerrando posição para limitar prejuízo."
+                )
+                await self._sell(pair, pos, price, reason="Stop Loss")
+                return
 
         # ── Trailing Stop ativo ───────────────────────────────────────────────
         if pos["trailing_active"]:
@@ -342,6 +382,64 @@ class DCAEngine:
         except Exception as exc:
             logger.warning(f"[{pair}] Falha ao calcular RSI: {exc}")
             return None
+
+    # ── Filtro de tendência EMA (Elder) ──────────────────────────────────────
+
+    async def _get_trend_ema(self, pair: str, cfg: dict) -> float | None:
+        """EMA em candles diários. Retorna None se falhar (não bloqueia entrada)."""
+        try:
+            period = int(cfg.get("trend_ema_period", 21))
+            ohlcv  = await self.exchange.get_ohlcv(pair, timeframe="1d", limit=period + 10)
+            closes = [float(c[4]) for c in ohlcv]
+            return self.exchange.calculate_ema(closes, period)
+        except Exception as exc:
+            logger.warning(f"[{pair}] Falha ao calcular EMA tendência: {exc}")
+            return None
+
+    # ── Circuit Breaker (Elder) ───────────────────────────────────────────────
+
+    async def _update_circuit_breaker(self, cfg: dict) -> None:
+        """Calcula drawdown total e ativa/desativa circuit breaker. Chame uma vez por ciclo."""
+        all_pairs        = self.bot_config.get_all_pairs()
+        total_invested   = 0.0
+        total_unrealized = 0.0
+
+        for pair in all_pairs:
+            pos = self.state.get_position(pair)
+            if not pos["is_active"]:
+                continue
+            try:
+                price             = await self.exchange.get_price(pair)
+                total_invested   += pos["total_cost"]
+                total_unrealized += (price - pos["avg_price"]) * pos["total_qty"]
+            except Exception:
+                continue
+
+        if total_invested <= 0:
+            self._circuit_breaker_active = False
+            return
+
+        cb_pct       = cfg.get("circuit_breaker_pct", 10.0)
+        drawdown_pct = (-total_unrealized / total_invested) * 100
+        was_active   = self._circuit_breaker_active
+        self._circuit_breaker_active = drawdown_pct >= cb_pct
+
+        if self._circuit_breaker_active and not was_active:
+            msg = (
+                f"🚨 *Circuit Breaker ativado*\n"
+                f"├ Drawdown total: `{drawdown_pct:.1f}%` ≥ limite `{cb_pct}%`\n"
+                f"└ Novas entradas pausadas até drawdown recuar."
+            )
+            logger.warning(msg.replace("*", "").replace("`", ""))
+            await self.notify(msg)
+        elif not self._circuit_breaker_active and was_active:
+            msg = (
+                f"✅ *Circuit Breaker desativado*\n"
+                f"├ Drawdown recuou para `{drawdown_pct:.1f}%` < `{cb_pct}%`\n"
+                f"└ Novas entradas liberadas."
+            )
+            logger.info(msg.replace("*", "").replace("`", ""))
+            await self.notify(msg)
 
     # ── Comando manual ────────────────────────────────────────────────────────
 

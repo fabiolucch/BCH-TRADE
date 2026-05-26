@@ -106,4 +106,84 @@ PRESETS: dict[str, StrategyParams] = {
         "trailing_stop_pct"    : 0.4,
         "martingale_levels"    : 3,
     },
+
+    # ── Estratégias Elder ─────────────────────────────────────────────────────
+    # Baseadas nos 3 pilares de Alexander Elder: Psicologia, Análise Técnica e
+    # Gestão de Risco. Stop Loss obrigatório + filtros de tendência/momentum.
+
+    "elder_prudente": {
+        "name"                   : "Elder Prudente",
+        "emoji"                  : "🎓",
+        "description"            : (
+            "Máxima proteção de capital. Só entra em tendência de alta (EMA21 diário)\n"
+            "com RSI < 50. Stop Loss em 12% + Circuit Breaker em 8% do portfólio.\n"
+            "Trailing de 1.5% garante saída com lucro preservado."
+        ),
+        "dca_drop_pct"           : 5.0,
+        "order_size_usdt"        : 20.0,
+        "take_profit_pct"        : 3.0,
+        "max_dca_orders"         : 5,
+        "trailing_stop_enabled"  : True,
+        "trailing_stop_pct"      : 1.5,
+        "martingale_levels"      : 0,
+        "rsi_enabled"            : True,
+        "rsi_threshold"          : 50.0,
+        "rsi_period"             : 14,
+        "stop_loss_enabled"      : True,
+        "stop_loss_pct"          : 12.0,
+        "trend_filter_enabled"   : True,
+        "trend_ema_period"       : 21,
+        "circuit_breaker_enabled": True,
+        "circuit_breaker_pct"    : 8.0,
+    },
+    "elder_balanceado": {
+        "name"                   : "Elder Balanceado",
+        "emoji"                  : "⚖️🎓",
+        "description"            : (
+            "Equilíbrio entre lucro e proteção. EMA21 como filtro de tendência,\n"
+            "RSI < 45 evita topos. Stop Loss 8% + Circuit Breaker 6%.\n"
+            "Recomendado como estratégia principal — Elder's 6% rule adaptada."
+        ),
+        "dca_drop_pct"           : 3.0,
+        "order_size_usdt"        : 25.0,
+        "take_profit_pct"        : 2.0,
+        "max_dca_orders"         : 8,
+        "trailing_stop_enabled"  : True,
+        "trailing_stop_pct"      : 1.0,
+        "martingale_levels"      : 0,
+        "rsi_enabled"            : True,
+        "rsi_threshold"          : 45.0,
+        "rsi_period"             : 14,
+        "stop_loss_enabled"      : True,
+        "stop_loss_pct"          : 8.0,
+        "trend_filter_enabled"   : True,
+        "trend_ema_period"       : 21,
+        "circuit_breaker_enabled": True,
+        "circuit_breaker_pct"    : 6.0,
+    },
+    "elder_momentum": {
+        "name"                   : "Elder Momentum",
+        "emoji"                  : "🚀🎓",
+        "description"            : (
+            "Alta frequência com proteção Elder. Entradas a cada 2% com EMA14\n"
+            "e RSI < 55. Stop Loss apertado em 6% para saídas rápidas.\n"
+            "Circuit Breaker 10% protege contra quedas prolongadas."
+        ),
+        "dca_drop_pct"           : 2.0,
+        "order_size_usdt"        : 20.0,
+        "take_profit_pct"        : 1.5,
+        "max_dca_orders"         : 10,
+        "trailing_stop_enabled"  : True,
+        "trailing_stop_pct"      : 0.7,
+        "martingale_levels"      : 1,
+        "rsi_enabled"            : True,
+        "rsi_threshold"          : 55.0,
+        "rsi_period"             : 14,
+        "stop_loss_enabled"      : True,
+        "stop_loss_pct"          : 6.0,
+        "trend_filter_enabled"   : True,
+        "trend_ema_period"       : 14,
+        "circuit_breaker_enabled": True,
+        "circuit_breaker_pct"    : 10.0,
+    },
 }

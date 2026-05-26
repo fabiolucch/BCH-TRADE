@@ -9,6 +9,8 @@ from copy import deepcopy
 from pathlib import Path
 
 from config import (
+    CIRCUIT_BREAKER_ENABLED,
+    CIRCUIT_BREAKER_PCT,
     DCA_DROP_PCT,
     MARTINGALE_LEVELS,
     MAX_DCA_ORDERS,
@@ -18,9 +20,13 @@ from config import (
     RSI_ENABLED,
     RSI_PERIOD,
     RSI_THRESHOLD,
+    STOP_LOSS_ENABLED,
+    STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_PCT,
+    TREND_EMA_PERIOD,
+    TREND_FILTER_ENABLED,
 )
 
 logger = logging.getLogger("bot.config_mgr")
@@ -37,12 +43,18 @@ _DEFAULTS: dict = {
     "trailing_stop_pct"     : TRAILING_STOP_PCT,
     "martingale_levels"     : MARTINGALE_LEVELS,
     "reentry_drop_pct"      : REENTRY_DROP_PCT,
-    "rsi_enabled"           : RSI_ENABLED,
-    "rsi_threshold"         : RSI_THRESHOLD,
-    "rsi_period"            : RSI_PERIOD,
-    "bot_running"           : False,          # inicia parado; usuario ativa pelo Telegram
-    "active_pairs"          : list(PAIRS),    # subconjunto de todos os pares ativos
-    "extra_pairs"           : list(PAIRS),    # todos os pares gerenciados — inicializado com .env
+    "rsi_enabled"            : RSI_ENABLED,
+    "rsi_threshold"          : RSI_THRESHOLD,
+    "rsi_period"             : RSI_PERIOD,
+    "stop_loss_enabled"      : STOP_LOSS_ENABLED,
+    "stop_loss_pct"          : STOP_LOSS_PCT,
+    "trend_filter_enabled"   : TREND_FILTER_ENABLED,
+    "trend_ema_period"       : TREND_EMA_PERIOD,
+    "circuit_breaker_enabled": CIRCUIT_BREAKER_ENABLED,
+    "circuit_breaker_pct"    : CIRCUIT_BREAKER_PCT,
+    "bot_running"            : False,          # inicia parado; usuario ativa pelo Telegram
+    "active_pairs"           : list(PAIRS),    # subconjunto de todos os pares ativos
+    "extra_pairs"            : list(PAIRS),    # todos os pares gerenciados — inicializado com .env
 }
 
 # Metadados dos campos configuráveis pelo usuário
@@ -54,8 +66,11 @@ CONFIG_FIELDS: dict[str, dict] = {
     "trailing_stop_pct" : {"label": "Trailing Stop (%)",              "type": float, "min": 0.1, "max": 20.0},
     "martingale_levels" : {"label": "Níveis de Martingale (0-3)",     "type": int,   "min": 0,   "max": 3},
     "reentry_drop_pct"  : {"label": "Queda p/ re-entrada (%)",        "type": float, "min": 0.0, "max": 20.0},
-    "rsi_threshold"     : {"label": "RSI máximo para entrada",        "type": float, "min": 10.0, "max": 90.0},
-    "rsi_period"        : {"label": "Período do RSI (candles)",       "type": int,   "min": 5,    "max": 50},
+    "rsi_threshold"       : {"label": "RSI máximo para entrada",          "type": float, "min": 10.0, "max": 90.0},
+    "rsi_period"          : {"label": "Período do RSI (candles)",         "type": int,   "min": 5,    "max": 50},
+    "stop_loss_pct"       : {"label": "Stop Loss (%)",                    "type": float, "min": 1.0,  "max": 50.0},
+    "trend_ema_period"    : {"label": "Período EMA tendência (dias)",     "type": int,   "min": 5,    "max": 200},
+    "circuit_breaker_pct" : {"label": "Circuit Breaker — drawdown máx (%)", "type": float, "min": 1.0, "max": 50.0},
 }
 
 
@@ -105,7 +120,7 @@ class BotConfig:
     def apply_preset(self, key: str) -> dict:
         from strategies import PRESETS
         p = PRESETS[key]
-        self._cfg.update({
+        updates = {
             "strategy"              : key,
             "dca_drop_pct"          : p["dca_drop_pct"],
             "order_size_usdt"       : p["order_size_usdt"],
@@ -114,7 +129,17 @@ class BotConfig:
             "trailing_stop_enabled" : p["trailing_stop_enabled"],
             "trailing_stop_pct"     : p["trailing_stop_pct"],
             "martingale_levels"     : p["martingale_levels"],
-        })
+        }
+        # Campos Elder: aplicados apenas quando o preset os define explicitamente
+        for field in (
+            "stop_loss_enabled", "stop_loss_pct",
+            "trend_filter_enabled", "trend_ema_period",
+            "circuit_breaker_enabled", "circuit_breaker_pct",
+            "rsi_enabled", "rsi_threshold", "rsi_period",
+        ):
+            if field in p:
+                updates[field] = p[field]
+        self._cfg.update(updates)
         self._save()
         logger.info(f"Estratégia aplicada: {key}")
         return self.get()
@@ -163,6 +188,24 @@ class BotConfig:
         self._cfg["strategy"] = "personalizado"
         self._save()
         return self._cfg["rsi_enabled"]
+
+    def toggle_stop_loss(self) -> bool:
+        self._cfg["stop_loss_enabled"] = not self._cfg["stop_loss_enabled"]
+        self._cfg["strategy"] = "personalizado"
+        self._save()
+        return self._cfg["stop_loss_enabled"]
+
+    def toggle_trend_filter(self) -> bool:
+        self._cfg["trend_filter_enabled"] = not self._cfg["trend_filter_enabled"]
+        self._cfg["strategy"] = "personalizado"
+        self._save()
+        return self._cfg["trend_filter_enabled"]
+
+    def toggle_circuit_breaker(self) -> bool:
+        self._cfg["circuit_breaker_enabled"] = not self._cfg["circuit_breaker_enabled"]
+        self._cfg["strategy"] = "personalizado"
+        self._save()
+        return self._cfg["circuit_breaker_enabled"]
 
     def add_extra_pair(self, symbol: str) -> tuple[bool, str]:
         symbol = symbol.upper().strip()
