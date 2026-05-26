@@ -186,4 +186,39 @@ PRESETS: dict[str, StrategyParams] = {
         "circuit_breaker_enabled": True,
         "circuit_breaker_pct"    : 10.0,
     },
+
+    # ── Estratégia Híbrida Otimizada ──────────────────────────────────────────
+    # Combina frequência do Agressivo com proteções Elder.
+    # Derivada da análise de backtest Nov/2024–Jun/2025:
+    # - Aportes pequenos e frequentes funcionam melhor em crashes profundos
+    # - Stop Loss evita o cenário catastrófico do Martingale (-49 USDT no ETH)
+    # - Circuit Breaker pausa entradas se portfólio sangrar demais
+    # - Sem EMA filter: BTC se recupera rápido e o filtro bloquearia boas entradas
+
+    "hibrido_otimizado": {
+        "name"                   : "Híbrido Otimizado",
+        "emoji"                  : "🔬",
+        "description"            : (
+            "Frequência do Agressivo + proteções Elder. Aportes de 20 USDT a cada 2.5%,\n"
+            "TP em 1.2% com trailing de 0.8%. Stop Loss em 8% e Circuit Breaker em 8%\n"
+            "protegem contra crashes prolongados. Sem EMA filter para não bloquear recuperações."
+        ),
+        "dca_drop_pct"           : 2.5,
+        "order_size_usdt"        : 20.0,
+        "take_profit_pct"        : 1.2,
+        "max_dca_orders"         : 10,
+        "trailing_stop_enabled"  : True,
+        "trailing_stop_pct"      : 0.8,
+        "martingale_levels"      : 0,
+        "rsi_enabled"            : False,
+        "rsi_threshold"          : 45.0,
+        "rsi_period"             : 14,
+        "stop_loss_enabled"      : True,
+        "stop_loss_pct"          : 8.0,
+        "trend_filter_enabled"   : False,
+        "trend_ema_period"       : 21,
+        "circuit_breaker_enabled": True,
+        "circuit_breaker_pct"    : 8.0,
+        "reentry_drop_pct"       : 1.5,
+    },
 }
