@@ -28,3 +28,6 @@ env/
 .idea/
 *.swp
 *.swo
+
+# ── Claude Code interno ──
+.claude/
