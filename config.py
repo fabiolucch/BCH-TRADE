@@ -55,6 +55,64 @@ STATE_FILE     = os.getenv("STATE_FILE", "position_state.json")
 LOG_FILE       = os.getenv("LOG_FILE", "bot_trade.log")
 
 
+# ─────────────────────────────────────────────────────────────
+# Triple Screen — timeframes
+# ─────────────────────────────────────────────────────────────
+TIMEFRAME_WEEKLY  = os.getenv("TIMEFRAME_WEEKLY", "1w")
+
+# ─────────────────────────────────────────────────────────────
+# DCA levels — number and drop thresholds
+# ─────────────────────────────────────────────────────────────
+DCA_MAX_LEVELS   = int(os.getenv("DCA_MAX_LEVELS", "3"))
+DCA_DROP_L2_PCT  = float(os.getenv("DCA_DROP_L2_PCT", "3.0"))   # % drop from L1 for L2 entry
+DCA_DROP_L3_PCT  = float(os.getenv("DCA_DROP_L3_PCT", "5.0"))   # % drop from L2 for L3 entry
+DCA_RISK_L1_PCT  = float(os.getenv("DCA_RISK_L1_PCT", "1.0"))   # % account risk on L1
+DCA_RISK_L2_PCT  = float(os.getenv("DCA_RISK_L2_PCT", "1.5"))   # % account risk on L2
+DCA_RISK_L3_PCT  = float(os.getenv("DCA_RISK_L3_PCT", "2.0"))   # % account risk on L3
+
+# ─────────────────────────────────────────────────────────────
+# Hard stop — Elder's "oxygen tank": survival before profit
+# ─────────────────────────────────────────────────────────────
+HARD_STOP_PCT    = float(os.getenv("HARD_STOP_PCT", "4.0"))     # max total loss as % of account
+
+# ─────────────────────────────────────────────────────────────
+# Take Profit scaling
+# ─────────────────────────────────────────────────────────────
+TP1_RISK_RATIO   = float(os.getenv("TP1_RISK_RATIO", "1.5"))    # TP1 at avg_entry + 1.5× risk
+TP2_RISK_RATIO   = float(os.getenv("TP2_RISK_RATIO", "2.5"))    # TP2 at avg_entry + 2.5× risk
+TP1_CLOSE_PCT    = float(os.getenv("TP1_CLOSE_PCT", "0.30"))    # close 30% at TP1
+TP2_CLOSE_PCT    = float(os.getenv("TP2_CLOSE_PCT", "0.40"))    # close 40% at TP2
+                                                                  # trailing stop for remaining 30%
+
+# ─────────────────────────────────────────────────────────────
+# Trailing stop
+# ─────────────────────────────────────────────────────────────
+TRAIL_ATR_MULT   = float(os.getenv("TRAIL_ATR_MULT", "2.0"))    # trailing = peak - (ATR × mult)
+
+# ─────────────────────────────────────────────────────────────
+# MACD parameters — used on weekly screen for trend direction
+# ─────────────────────────────────────────────────────────────
+MACD_FAST          = int(os.getenv("MACD_FAST", "12"))
+MACD_SLOW          = int(os.getenv("MACD_SLOW", "26"))
+MACD_SIGNAL_PERIOD = int(os.getenv("MACD_SIGNAL_PERIOD", "9"))
+
+# ─────────────────────────────────────────────────────────────
+# Volume filter — daily screen confirms crowd participation
+# ─────────────────────────────────────────────────────────────
+VOL_MA_PERIOD    = int(os.getenv("VOL_MA_PERIOD", "20"))
+
+# ─────────────────────────────────────────────────────────────
+# RSI thresholds for DCA levels
+# ─────────────────────────────────────────────────────────────
+RSI_L2_THRESHOLD = float(os.getenv("RSI_L2_THRESHOLD", "35.0"))  # RSI must be < 35 for L2
+RSI_L3_THRESHOLD = float(os.getenv("RSI_L3_THRESHOLD", "30.0"))  # RSI must be < 30 for L3
+
+# ─────────────────────────────────────────────────────────────
+# EMA Weekly
+# ─────────────────────────────────────────────────────────────
+EMA_WEEKLY_PERIOD = int(os.getenv("EMA_WEEKLY_PERIOD", "13"))
+
+
 def create_exchange() -> ccxt.Exchange:
     """
     Cria e retorna a instância configurada da exchange.
