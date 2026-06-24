@@ -14,10 +14,17 @@ Fluxo ao detectar sinal de entrada:
 Monitoramento (quando modo='monitor'):
   - A cada ciclo verifica o preço atual
   - Fecha a mercado se atingir SL ou TP matematicamente
+
+DCA functions (Triple Screen strategy):
+  - load_dca_state / save_dca_state  : persist DCAPosition per-symbol in JSON
+  - calculate_dca_qty                : Kelly-inspired sizing: risk_pct% of balance
+  - execute_partial_close            : market sell for TP1/TP2 partial exits
+  - execute_full_close               : market sell for hard stop / trailing stop
 """
 
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -577,4 +584,222 @@ def open_position(exchange: ccxt.Exchange, indicators: Dict) -> bool:
         return False
     except Exception as exc:
         logger.error(f"[ENTRADA] Erro inesperado ao abrir posição: {exc}", exc_info=True)
+        return False
+
+
+# ═════════════════════════════════════════════════════════════
+# DCA STATE PERSISTENCE (per-symbol JSON files)
+# ═════════════════════════════════════════════════════════════
+
+def _dca_state_path(symbol: str) -> str:
+    """
+    Returns the path to the per-symbol DCA state file.
+    BTC/USDT → dca_state_BTC_USDT.json
+    """
+    symbol_safe = symbol.replace("/", "_")
+    return f"dca_state_{symbol_safe}.json"
+
+
+def load_dca_state(symbol: str) -> "DCAPosition":  # type: ignore[name-defined]
+    """
+    Loads a DCAPosition from its JSON state file.
+    Returns a fresh (closed) DCAPosition if the file doesn't exist or is corrupt.
+
+    Import is deferred to avoid circular imports between execution and strategy.
+    """
+    from strategy import DCAPosition
+
+    path = _dca_state_path(symbol)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return DCAPosition.from_dict(data)
+        except (json.JSONDecodeError, KeyError, OSError) as exc:
+            logger.warning(
+                f"[DCA STATE] Failed to load {path} ({exc}). Returning fresh state."
+            )
+    return DCAPosition(symbol=symbol)
+
+
+def save_dca_state(position: "DCAPosition") -> None:  # type: ignore[name-defined]
+    """Persists a DCAPosition to its per-symbol JSON state file."""
+    path = _dca_state_path(position.symbol)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(position.to_dict(), f, indent=2, ensure_ascii=False)
+        logger.debug(f"[DCA STATE] Saved state for {position.symbol} → {path}")
+    except OSError as exc:
+        logger.error(f"[DCA STATE] Failed to save {path}: {exc}")
+
+
+# ═════════════════════════════════════════════════════════════
+# DCA POSITION SIZING
+# ═════════════════════════════════════════════════════════════
+
+def calculate_dca_qty(
+    balance: float,
+    entry: float,
+    hard_stop: float,
+    risk_pct: float,
+) -> float:
+    """
+    Calculates quantity for a DCA level using Elder's 2% rule logic.
+
+    max_risk_usdt = balance × (risk_pct / 100)
+    risk_per_unit = entry - hard_stop           (dollars at risk per coin)
+    quantity      = max_risk_usdt / risk_per_unit
+
+    This ensures that if the hard stop is hit, total loss on this level
+    equals exactly risk_pct% of account — no more, no less.
+
+    Raises ValueError if entry <= hard_stop (invalid stop placement).
+    """
+    if entry <= hard_stop:
+        raise ValueError(
+            f"calculate_dca_qty: entry ({entry:.6f}) must be > hard_stop ({hard_stop:.6f})"
+        )
+    if balance <= 0 or risk_pct <= 0:
+        raise ValueError(
+            f"calculate_dca_qty: balance ({balance:.2f}) and risk_pct ({risk_pct}) must be > 0"
+        )
+
+    max_risk_usdt = balance * (risk_pct / 100.0)
+    risk_per_unit = entry - hard_stop
+    quantity      = max_risk_usdt / risk_per_unit
+
+    logger.info(
+        f"[DCA SIZING] balance={balance:.2f} | risk_pct={risk_pct}% | "
+        f"max_risk={max_risk_usdt:.2f} | entry={entry:.4f} | stop={hard_stop:.4f} | "
+        f"risk_per_unit={risk_per_unit:.6f} | qty={quantity:.6f}"
+    )
+    return quantity
+
+
+def _apply_dca_precision(exchange: ccxt.Exchange, symbol: str, quantity: float) -> float:
+    """
+    Applies market amount precision for the given symbol.
+    Floors (never rounds up) to avoid InsufficientFunds on the exchange.
+    """
+    try:
+        market    = exchange.market(symbol)
+        precision = market.get("precision", {}).get("amount", None)
+        min_qty   = market.get("limits", {}).get("amount", {}).get("min", 0.0)
+
+        if precision is not None:
+            if isinstance(precision, int):
+                factor   = 10 ** precision
+                quantity = math.floor(quantity * factor) / factor
+            elif isinstance(precision, float) and precision > 0:
+                factor   = 1.0 / precision
+                quantity = math.floor(quantity * factor) / factor
+
+        if min_qty and quantity < min_qty:
+            raise ValueError(
+                f"Quantity {quantity:.8f} below market minimum {min_qty} for {symbol}."
+            )
+        return quantity
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            f"[DCA PRECISION] Could not apply precision for {symbol}: {exc}. Using raw value."
+        )
+        return quantity
+
+
+# ═════════════════════════════════════════════════════════════
+# DCA ORDER EXECUTION
+# ═════════════════════════════════════════════════════════════
+
+def execute_partial_close(
+    exchange: ccxt.Exchange,
+    position: "DCAPosition",  # type: ignore[name-defined]
+    qty: float,
+    reason: str,
+) -> bool:
+    """
+    Sells `qty` of the position at market price (partial exit for TP1 / TP2).
+
+    Updates position.total_qty and recalculates avg after the fill.
+    Returns True on success, False on failure (position unchanged on failure).
+    """
+    try:
+        logger.info(
+            f"[DCA EXEC] Partial close {position.symbol}: "
+            f"qty={qty:.6f} | reason={reason}"
+        )
+        order = exchange.create_market_sell_order(position.symbol, qty)
+        fill_price = float(order.get("average") or order.get("price") or 0.0)
+        logger.info(
+            f"[DCA EXEC] Partial close filled → id={order.get('id')} | "
+            f"qty={order.get('filled', qty):.6f} | avg_price={fill_price:.4f} | "
+            f"reason={reason}"
+        )
+
+        # Update position state — reduce qty, recompute avg
+        filled_qty          = float(order.get("filled") or qty)
+        position.total_qty  = max(0.0, position.total_qty - filled_qty)
+        position.total_cost = position.avg_price * position.total_qty  # approximation post-partial
+
+        return True
+
+    except ccxt.InsufficientFunds as exc:
+        logger.error(f"[DCA EXEC] Insufficient funds on partial close: {exc}")
+        return False
+    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+        logger.error(f"[DCA EXEC] Exchange error on partial close: {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"[DCA EXEC] Unexpected error on partial close: {exc}", exc_info=True)
+        return False
+
+
+def execute_full_close(
+    exchange: ccxt.Exchange,
+    position: "DCAPosition",  # type: ignore[name-defined]
+    reason: str,
+) -> bool:
+    """
+    Closes the entire remaining position at market price.
+
+    Used for: hard stop, stop loss, trailing stop final close.
+    Returns True on success, False on failure.
+    The position is NOT reset here — caller must call save_dca_state()
+    with position.is_open=False after a successful close.
+    """
+    if position.total_qty <= 0:
+        logger.warning(
+            f"[DCA EXEC] execute_full_close called but total_qty=0 for {position.symbol}. "
+            f"Nothing to close."
+        )
+        position.is_open = False
+        return True
+
+    try:
+        logger.warning(
+            f"[DCA EXEC] Full close {position.symbol}: "
+            f"qty={position.total_qty:.6f} | reason={reason}"
+        )
+        order = exchange.create_market_sell_order(position.symbol, position.total_qty)
+        fill_price = float(order.get("average") or order.get("price") or 0.0)
+        logger.warning(
+            f"[DCA EXEC] Full close filled → id={order.get('id')} | "
+            f"qty={order.get('filled', position.total_qty):.6f} | "
+            f"avg_fill={fill_price:.4f} | reason={reason}"
+        )
+
+        # Mark position closed
+        position.is_open   = False
+        position.total_qty = 0.0
+        return True
+
+    except ccxt.InsufficientFunds as exc:
+        logger.error(f"[DCA EXEC] Insufficient funds on full close: {exc}")
+        return False
+    except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+        logger.error(f"[DCA EXEC] Exchange error on full close: {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"[DCA EXEC] Unexpected error on full close: {exc}", exc_info=True)
         return False
